@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+backend/.venv/
+
+# Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+coverage/
+
+# Local application data
+data/*
+!data/.gitkeep
+uploads/
+*.db
+*.sqlite
+*.sqlite3
+
+# PaddleOCR / model caches
+.paddlex/
+.paddleocr/
+models/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
