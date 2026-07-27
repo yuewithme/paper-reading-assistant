@@ -13,6 +13,7 @@ import {
   type SemanticGroup,
   type VocabularyItem,
 } from "../api";
+import { AnalysisMarkdown } from "./AnalysisMarkdown";
 import { HighlightedText } from "./HighlightedText";
 import { ChatPanel, type ChatAnchor } from "./ChatPanel";
 import { VocabularyDrawer } from "./VocabularyDrawer";
@@ -58,6 +59,10 @@ export function PaperReader({
   const translated = useMemo(
     () => paper.paragraphs.filter((paragraph) => paragraph.translated_text).length,
     [paper.paragraphs],
+  );
+  const analysisBlockCount = useMemo(
+    () => groups.filter((group) => group.analysis_status !== "skipped").length,
+    [groups],
   );
   const paragraphMap = useMemo(
     () => new Map(paper.paragraphs.map((paragraph) => [paragraph.id, paragraph])),
@@ -249,7 +254,7 @@ export function PaperReader({
                 ? `${paper.pages_processed}/${paper.page_count || "?"} 页`
                 : `${paper.page_count} 页`}
             </span><span>{paper.paragraph_count} 段</span>
-            <span>{translated}/{paper.paragraph_count} 已翻译</span><span>{groups.length} 个语义块</span>
+            <span>{translated}/{paper.paragraph_count} 已翻译</span><span>{analysisBlockCount} 个解读块</span>
           </div>
         </div>
         <div className="reader-actions">
@@ -323,7 +328,9 @@ export function PaperReader({
               >
                 <span className="group-number">GROUP {group.group_index + 1}</span>
                 {group.analysis_text ? (
-                  <p><HighlightedText text={group.analysis_text} vocabulary={vocabulary} /></p>
+                  <AnalysisMarkdown text={group.analysis_text} vocabulary={vocabulary} />
+                ) : group.analysis_status === "skipped" ? (
+                  <p className="analysis-skipped">结构信息，无需单独解读。</p>
                 ) : (
                   <p className="analysis-empty">
                     {ocrInProgress

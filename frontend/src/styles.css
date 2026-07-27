@@ -489,7 +489,78 @@ h1 {
   margin: 12px 0 0;
   color: #3d453e;
   line-height: 1.85;
-  white-space: pre-wrap;
+}
+
+.analysis-markdown h3,
+.analysis-markdown h4 {
+  margin: 22px 0 8px;
+  color: #26342a;
+  line-height: 1.4;
+}
+
+.analysis-markdown h3 {
+  font-size: 17px;
+}
+
+.analysis-markdown h4 {
+  font-size: 14px;
+}
+
+.analysis-markdown ul,
+.analysis-markdown ol {
+  margin: 10px 0 0;
+  padding-left: 22px;
+  color: #3d453e;
+  line-height: 1.75;
+}
+
+.analysis-markdown li + li {
+  margin-top: 6px;
+}
+
+.analysis-markdown blockquote {
+  margin: 14px 0 0;
+  padding: 1px 0 1px 14px;
+  border-left: 3px solid #a6b59f;
+  color: #59635b;
+}
+
+.analysis-markdown table {
+  width: 100%;
+  margin-top: 14px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.analysis-markdown th,
+.analysis-markdown td {
+  padding: 8px 9px;
+  border: 1px solid #cfd8cc;
+  text-align: left;
+  vertical-align: top;
+}
+
+.analysis-markdown code {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(35, 53, 40, .08);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: .9em;
+}
+
+.analysis-markdown pre {
+  overflow-x: auto;
+  margin: 14px 0 0;
+  padding: 12px;
+  border-radius: 6px;
+  background: #26342a;
+  color: #f5f7f3;
+}
+
+.analysis-markdown pre code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
 }
 
 .group-number {
@@ -502,6 +573,11 @@ h1 {
 .semantic-analysis .analysis-empty {
   color: #92978f;
   font-style: italic;
+}
+
+.semantic-analysis .analysis-skipped {
+  color: #92978f;
+  font-size: 13px;
 }
 
 .action-button {
