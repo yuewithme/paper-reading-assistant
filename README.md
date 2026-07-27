@@ -134,12 +134,13 @@ mkdir -p deploy/secrets data
 # 生成个人访问密码：
 printf "reader:$(openssl passwd -apr1 '替换成强密码')\n" \
   > deploy/secrets/.htpasswd
+chmod 644 deploy/secrets/.htpasswd
 
 docker compose --env-file .env.cloud -f compose.cloud.yml up -d --build
 docker compose --env-file .env.cloud -f compose.cloud.yml ps
 ```
 
-默认访问地址为 `http://服务器IP:18083`。安全组只需放行配置的
+默认访问地址为 `http://服务器IP:28473`。安全组只需放行配置的
 `PAPER_READER_PORT`，不要开放后端 8000 端口。正式长期使用应在前面接入域名和
 HTTPS；没有域名时可先通过受限安全组或 SSH 隧道验收。
 

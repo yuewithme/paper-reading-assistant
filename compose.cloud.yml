@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - "${PAPER_READER_PORT:-18083}:80"
+      - "${PAPER_READER_PORT:-28473}:80"
     volumes:
       - ./deploy/secrets/.htpasswd:/etc/nginx/auth/.htpasswd:ro
     depends_on:
