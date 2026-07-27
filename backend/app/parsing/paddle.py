@@ -98,6 +98,88 @@ def _normalize_table(value: Any) -> str:
     return "\n".join(" | ".join(cell for cell in row if cell) for row in parser.rows) or text
 
 
+def _order_page_blocks(blocks: list[DocumentBlock]) -> list[DocumentBlock]:
+    """Recover column-major reading order when a page has two separated columns."""
+    if len(blocks) < 4:
+        return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
+
+    content_x0 = min(block.bbox.x0 for block in blocks)
+    content_x1 = max(block.bbox.x1 for block in blocks)
+    content_width = content_x1 - content_x0
+    if content_width <= 0:
+        return blocks
+    midpoint = (content_x0 + content_x1) / 2
+
+    narrow = [
+        block
+        for block in blocks
+        if block.block_type != BlockType.TITLE
+        and (block.bbox.x1 - block.bbox.x0) < content_width * 0.55
+    ]
+    left_candidates = [
+        block
+        for block in narrow
+        if (block.bbox.x0 + block.bbox.x1) / 2 < midpoint
+    ]
+    right_candidates = [
+        block
+        for block in narrow
+        if (block.bbox.x0 + block.bbox.x1) / 2 >= midpoint
+    ]
+    if len(left_candidates) < 2 or len(right_candidates) < 2:
+        return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
+
+    left_edge = max(block.bbox.x1 for block in left_candidates)
+    right_edge = min(block.bbox.x0 for block in right_candidates)
+    if right_edge - left_edge < content_width * 0.03:
+        return sorted(blocks, key=lambda block: (block.bbox.y0, block.bbox.x0))
+
+    spanning = [
+        block
+        for block in blocks
+        if block.bbox.x0 < left_edge and block.bbox.x1 > right_edge
+    ]
+    column_blocks = [block for block in blocks if block not in spanning]
+
+    def column_major(items: list[DocumentBlock]) -> list[DocumentBlock]:
+        left = [
+            block
+            for block in items
+            if (block.bbox.x0 + block.bbox.x1) / 2 < midpoint
+        ]
+        right = [block for block in items if block not in left]
+
+        def key(block: DocumentBlock) -> tuple[float, float]:
+            return block.bbox.y0, block.bbox.x0
+
+        return sorted(left, key=key) + sorted(right, key=key)
+
+    ordered: list[DocumentBlock] = []
+    remaining = list(column_blocks)
+    for spanning_block in sorted(spanning, key=lambda block: (block.bbox.y0, block.bbox.x0)):
+        before = [
+            block
+            for block in remaining
+            if block.bbox.y1 <= spanning_block.bbox.y0
+        ]
+        ordered.extend(column_major(before))
+        remaining = [block for block in remaining if block not in before]
+        ordered.append(spanning_block)
+    ordered.extend(column_major(remaining))
+    return ordered
+
+
+def _restore_reading_order(blocks: list[DocumentBlock]) -> list[DocumentBlock]:
+    ordered: list[DocumentBlock] = []
+    page_numbers = sorted({block.page_number for block in blocks})
+    for page_number in page_numbers:
+        page_blocks = [block for block in blocks if block.page_number == page_number]
+        ordered.extend(_order_page_blocks(page_blocks))
+    for index, block in enumerate(ordered):
+        block.reading_order = index
+    return ordered
+
+
 class PaddleStructureParser:
     """Adapter around PP-StructureV3 with stable reading order and coordinates."""
 
@@ -199,6 +281,7 @@ class PaddleStructureParser:
             raise RuntimeError("PaddleOCR 没有返回任何页面结果")
         if not blocks:
             raise RuntimeError("PaddleOCR 完成了页面处理，但没有识别到可阅读内容")
+        blocks = _restore_reading_order(blocks)
         title = next(
             (block.text for block in blocks if block.block_type == BlockType.TITLE),
             pdf_path.stem,
