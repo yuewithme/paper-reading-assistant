@@ -65,6 +65,23 @@ def migrate_legacy_paper_table(engine: Engine) -> None:
         for name, sql_type in additions.items():
             if name not in existing:
                 connection.execute(text(f"ALTER TABLE papers ADD COLUMN {name} {sql_type}"))
+        connection.execute(
+            text(
+                """
+                UPDATE papers
+                SET pages_processed = page_count
+                WHERE pages_processed = 0
+                  AND page_count > 0
+                  AND status IN (
+                      'ocr_complete',
+                      'enriching',
+                      'ai_configuration_required',
+                      'ai_failed',
+                      'ready'
+                  )
+                """
+            )
+        )
 
 
 def session_dependency(
