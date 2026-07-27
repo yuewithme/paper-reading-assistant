@@ -12,6 +12,7 @@ import {
   type VocabularyItem,
 } from "../api";
 import { HighlightedText } from "./HighlightedText";
+import { ChatPanel, type ChatAnchor } from "./ChatPanel";
 import { VocabularyDrawer } from "./VocabularyDrawer";
 
 type PaperReaderProps = {
@@ -37,6 +38,11 @@ export function PaperReader({
     x: number;
     y: number;
   } | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatAnchor, setChatAnchor] = useState<ChatAnchor>({
+    selectedText: null,
+    paragraphId: null,
+  });
   const translated = useMemo(
     () => paper.paragraphs.filter((paragraph) => paragraph.translated_text).length,
     [paper.paragraphs],
@@ -93,6 +99,16 @@ export function PaperReader({
     }
   };
 
+  const askAboutSelection = () => {
+    if (!selection) return;
+    setChatAnchor({
+      selectedText: selection.text,
+      paragraphId: selection.paragraphId,
+    });
+    setChatOpen(true);
+    setSelection(null);
+  };
+
   const generateTranslations = async () => {
     setBusyTask("translation");
     setNotice(null);
@@ -144,6 +160,15 @@ export function PaperReader({
           </button>
           <button className="ghost-button action-button" onClick={() => setVocabularyOpen(true)}>
             词汇 {vocabulary.length}
+          </button>
+          <button
+            className="ghost-button action-button"
+            onClick={() => {
+              setChatAnchor({ selectedText: null, paragraphId: null });
+              setChatOpen(true);
+            }}
+          >
+            问 AI
           </button>
           <button className="primary-button" onClick={() => void generateDeepAnalysis()} disabled={busyTask !== null}>
             {busyTask === "analysis" ? "解读中…" : "生成深度解读"}
@@ -204,7 +229,7 @@ export function PaperReader({
         >
           <span>“{selection.text.slice(0, 40)}{selection.text.length > 40 ? "…" : ""}”</span>
           <button onClick={() => void saveSelection()}>翻译并收藏词汇</button>
-          <button disabled title="AI 问答将在阶段 5 开放">问 AI</button>
+          <button onClick={askAboutSelection}>问 AI</button>
         </div>
       )}
       <VocabularyDrawer
@@ -212,6 +237,12 @@ export function PaperReader({
         open={vocabularyOpen}
         onClose={() => setVocabularyOpen(false)}
         onChange={setVocabulary}
+      />
+      <ChatPanel
+        paperId={paper.id}
+        anchor={chatAnchor}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
       />
     </section>
   );

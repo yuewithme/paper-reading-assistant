@@ -16,6 +16,14 @@ class AIProvider(Protocol):
     def analyze(self, text: str) -> str:
         """Explain one semantic group deeply in Chinese."""
 
+    def answer(
+        self,
+        question: str,
+        context: str,
+        history: list[dict[str, str]],
+    ) -> str:
+        """Answer a paper-grounded question with conversational history."""
+
 
 class QwenProvider:
     def __init__(self, settings: Settings) -> None:
@@ -73,4 +81,35 @@ class QwenProvider:
         content = response.choices[0].message.content
         if not content:
             raise RuntimeError("Qwen 没有返回解读")
+        return content.strip()
+
+    def answer(
+        self,
+        question: str,
+        context: str,
+        history: list[dict[str, str]],
+    ) -> str:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是论文研读问答助手。优先依据给定论文上下文回答，并区分论文证据、"
+                    "基于文本的推断和补充背景。找不到依据时直接说明，不得伪造引用。"
+                    "回答清楚、具体，必要时解释公式、方法或论证关系。"
+                ),
+            },
+            *history[-10:],
+            {
+                "role": "user",
+                "content": f"论文上下文：\n{context}\n\n问题：{question}",
+            },
+        ]
+        response = self._require_client().chat.completions.create(
+            model=self.settings.qwen_chat_model,
+            temperature=0.25,
+            messages=messages,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("Qwen 没有返回回答")
         return content.strip()

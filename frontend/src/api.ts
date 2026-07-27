@@ -56,6 +56,29 @@ export type VocabularyItem = {
   created_at: string;
 };
 
+export type Citation = {
+  paragraph_id: string;
+  page_number: number;
+  quote: string;
+};
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  selected_text: string | null;
+  source_paragraph_ids: string[];
+  citations: Citation[];
+  created_at: string;
+};
+
+export type Conversation = {
+  id: string;
+  paper_id: string;
+  title: string;
+  messages: ChatMessage[];
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
@@ -146,4 +169,25 @@ export function updateVocabulary(
 
 export function deleteVocabulary(itemId: string): Promise<void> {
   return request<void>(`/api/vocabulary/${itemId}`, { method: "DELETE" });
+}
+
+export function fetchConversation(paperId: string): Promise<Conversation> {
+  return request<Conversation>(`/api/papers/${paperId}/conversation`);
+}
+
+export function sendChatMessage(
+  paperId: string,
+  question: string,
+  selectedText: string | null,
+  paragraphId: string | null,
+): Promise<{ conversation: Conversation; answer: ChatMessage }> {
+  return request(`/api/papers/${paperId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      question,
+      selected_text: selectedText,
+      paragraph_id: paragraphId,
+    }),
+  });
 }
