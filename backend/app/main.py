@@ -27,6 +27,13 @@ from sqlalchemy.orm import Session
 
 from .ai import AIConfigurationError, AIProvider, QwenProvider
 from .config import Settings, get_settings
+from .content import (
+    clean_extracted_text,
+    is_front_matter_heading,
+    is_reader_noise,
+    is_substantive_analysis,
+    is_tail_heading,
+)
 from .database import create_database, migrate_legacy_paper_table, session_dependency
 from .models import (
     Base,
@@ -72,7 +79,7 @@ READABLE_BLOCK_TYPES = {
     BlockType.REFERENCE,
 }
 VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
-ANALYSIS_PROMPT_VERSION = "analysis-v2"
+ANALYSIS_PROMPT_VERSION = "analysis-v3"
 SEMANTIC_GROUP_MAX_PARAGRAPHS = 4
 SEMANTIC_GROUP_MAX_CHARS = 6000
 logger = logging.getLogger(__name__)
@@ -219,32 +226,44 @@ def create_app(
                 page_number = paper.pages_processed + 1
                 for block in parsed_page.blocks:
                     page_number = max(page_number, block.page_number)
+                    cleaned_text = clean_extracted_text(block.text)
+                    if not cleaned_text:
+                        continue
                     record = DocumentBlockRecord(
                         paper_id=paper.id,
                         page_number=block.page_number,
                         block_type=block.block_type.value,
                         reading_order=reading_order,
-                        source_text=block.text,
+                        source_text=cleaned_text,
                         bbox_json=block.bbox.model_dump_json(),
                         parser=block.parser,
                     )
                     reading_order += 1
                     session.add(record)
                     session.flush()
-                    if block.block_type in READABLE_BLOCK_TYPES:
+                    if block.block_type in READABLE_BLOCK_TYPES and not is_reader_noise(
+                        block.block_type,
+                        cleaned_text,
+                        block.page_number,
+                    ):
                         session.add(
                             Paragraph(
                                 paper_id=paper.id,
                                 block_id=record.id,
                                 paragraph_index=paragraph_index,
-                                source_text=block.text,
+                                source_text=cleaned_text,
                                 page_number=block.page_number,
                                 source_bbox_json=block.bbox.model_dump_json(),
                             )
                         )
                         paragraph_index += 1
-                if parsed_page.title:
-                    paper.title = parsed_page.title
+                cleaned_title = clean_extracted_text(parsed_page.title)
+                if cleaned_title and not is_reader_noise(
+                    BlockType.TITLE,
+                    cleaned_title,
+                    paper.pages_processed + 1,
+                ):
+                    paper.title = cleaned_title
                 paper.page_count = max(paper.page_count, parsed_page.page_count)
                 paper.pages_processed = max(paper.pages_processed, page_number)
                 paper.paragraph_count = paragraph_index
@@ -325,11 +344,13 @@ def create_app(
         )
         if existing:
             paper = get_paper_or_404(paper_id, session)
-            ready_count = sum(group.analysis_status == "ready" for group in existing)
+            ready_count = sum(
+                group.analysis_status in {"ready", "skipped"} for group in existing
+            )
             uses_current_grouping = all(
                 group.prompt_version == ANALYSIS_PROMPT_VERSION for group in existing
             )
-            if not uses_current_grouping and ready_count == 0:
+            if not uses_current_grouping:
                 session.execute(
                     delete(SemanticGroup).where(SemanticGroup.paper_id == paper_id)
                 )
@@ -359,42 +380,85 @@ def create_app(
                 select(DocumentBlockRecord).where(DocumentBlockRecord.id.in_(block_ids))
             )
         }
-        batches: list[list[str]] = []
+        batches: list[tuple[list[str], str]] = []
         current: list[str] = []
         current_chars = 0
+        body_started = False
+        tail_started = False
+
+        def flush_current() -> None:
+            nonlocal current, current_chars, body_started, tail_started
+            if not current:
+                return
+            current_paragraphs = [
+                paragraph for paragraph in paragraphs if paragraph.id in current
+            ]
+            heading_texts = [
+                paragraph.source_text
+                for paragraph in current_paragraphs
+                if block_types.get(paragraph.block_id)
+                in {BlockType.TITLE.value, BlockType.HEADING.value}
+            ]
+            content_texts = [
+                paragraph.source_text
+                for paragraph in current_paragraphs
+                if block_types.get(paragraph.block_id)
+                not in {BlockType.TITLE.value, BlockType.HEADING.value}
+            ]
+            if any(is_tail_heading(text) for text in heading_texts):
+                tail_started = True
+            front_matter = any(is_front_matter_heading(text) for text in heading_texts)
+            body_heading = bool(heading_texts) and not front_matter and not tail_started
+            if body_heading and not all(
+                block_types.get(paragraph.block_id) == BlockType.TITLE.value
+                for paragraph in current_paragraphs
+                if block_types.get(paragraph.block_id)
+                in {BlockType.TITLE.value, BlockType.HEADING.value}
+            ):
+                body_started = True
+            analysis_status = (
+                "pending"
+                if body_started
+                and not front_matter
+                and not tail_started
+                and is_substantive_analysis(content_texts)
+                else "skipped"
+            )
+            batches.append((current, analysis_status))
+            current = []
+            current_chars = 0
+
         for paragraph in paragraphs:
             is_heading = block_types.get(paragraph.block_id) in {
                 BlockType.TITLE.value,
                 BlockType.HEADING.value,
             }
             if is_heading and current:
-                batches.append(current)
-                current = []
-                current_chars = 0
+                flush_current()
             current.append(paragraph.id)
             current_chars += len(paragraph.source_text)
             if not is_heading and (
                 len(current) >= SEMANTIC_GROUP_MAX_PARAGRAPHS
                 or current_chars >= SEMANTIC_GROUP_MAX_CHARS
             ):
-                batches.append(current)
-                current = []
-                current_chars = 0
-        if current:
-            batches.append(current)
+                flush_current()
+        flush_current()
         groups = [
             SemanticGroup(
                 paper_id=paper_id,
                 group_index=index,
                 paragraph_ids_json=json.dumps(paragraph_ids),
+                analysis_status=analysis_status,
                 prompt_version=ANALYSIS_PROMPT_VERSION,
             )
-            for index, paragraph_ids in enumerate(batches)
+            for index, (paragraph_ids, analysis_status) in enumerate(batches)
         ]
         session.add_all(groups)
         paper = get_paper_or_404(paper_id, session)
         paper.analysis_group_count = len(groups)
-        paper.analysis_groups_completed = 0
+        paper.analysis_groups_completed = sum(
+            group.analysis_status == "skipped" for group in groups
+        )
         session.commit()
         return groups
 
@@ -496,6 +560,9 @@ def create_app(
         paper = get_paper_or_404(paper_id, session)
         pending: list[tuple[SemanticGroup, str, bool]] = []
         for group in groups:
+            if group.analysis_status == "skipped":
+                cached_count += 1
+                continue
             if group.analysis_text and not force:
                 cached_count += 1
                 continue

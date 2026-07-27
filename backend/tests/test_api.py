@@ -70,6 +70,32 @@ class FakeDocumentParser:
                 BlockType.PARAGRAPH,
                 "This paper describes a structured workflow for understanding research.",
             ),
+            (BlockType.HEADING, "1 Introduction"),
+            (
+                BlockType.PARAGRAPH,
+                "Academic readers need a reliable workflow that connects the source text "
+                "with translation and explanation. Existing tools often separate these "
+                "steps, which makes evidence difficult to trace and interrupts focused reading.",
+            ),
+            (
+                BlockType.PARAGRAPH,
+                "We therefore align each original paragraph with its translation and connect "
+                "several related paragraphs to one semantic analysis block. This organization "
+                "preserves context while avoiding repetitive explanations of isolated sentences.",
+            ),
+            (BlockType.HEADING, "2 Method"),
+            (
+                BlockType.PARAGRAPH,
+                "The method first removes publication notices, author contact details, repeated "
+                "page markers, and reference-list entries. It then groups the remaining body "
+                "paragraphs by section boundaries and only analyzes groups with enough substance.",
+            ),
+            (
+                BlockType.PARAGRAPH,
+                "The resulting reader keeps the complete argument visible on the left and renders "
+                "a concise Markdown explanation on the right. This makes the relationship between "
+                "paper evidence and interpretation explicit without hiding useful source material.",
+            ),
         ]
         return ParsedDocument(
             title="Reliable Academic Reading",
@@ -330,9 +356,19 @@ def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
     assert groups.json()
     assert all(1 <= len(group["paragraph_ids"]) <= 4 for group in groups.json())
     assert any(len(group["paragraph_ids"]) > 1 for group in groups.json())
+    assert groups.json()[0]["analysis_status"] == "skipped"
+    assert groups.json()[1]["analysis_status"] == "skipped"
+    assert all(
+        group["analysis_status"] == "ready" and group["analysis_text"]
+        for group in groups.json()[2:]
+    )
     assert first.json()["generated_count"] == 0
     assert first.json()["cached_count"] == len(groups.json())
-    assert all(group["analysis_text"].startswith("深度解读：") for group in first.json()["groups"])
+    assert all(
+        group["analysis_status"] == "skipped"
+        or group["analysis_text"].startswith("深度解读：")
+        for group in first.json()["groups"]
+    )
 
 
 def test_translation_and_analysis_use_bounded_concurrency(tmp_path) -> None:
@@ -433,7 +469,10 @@ def test_background_import_and_reading_progress_are_recoverable(tmp_path) -> Non
     assert detail["status"] == "ready"
     assert all(paragraph["translated_text"] for paragraph in detail["paragraphs"])
     groups = client.get(f"/api/papers/{paper_id}/groups").json()
-    assert groups and all(group["analysis_text"] for group in groups)
+    assert groups and all(
+        group["analysis_status"] == "skipped" or group["analysis_text"]
+        for group in groups
+    )
     paragraph_id = detail["paragraphs"][-1]["id"]
     updated = client.patch(
         f"/api/papers/{paper_id}/progress",
