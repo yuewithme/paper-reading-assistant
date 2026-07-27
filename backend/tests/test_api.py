@@ -134,6 +134,16 @@ def test_pdf_import_persists_file_and_paragraphs(tmp_path) -> None:
     assert paper["status"] == "ready"
     assert paper["page_count"] == 1
     assert paper["paragraph_count"] > 0
+    assert paper["translations_completed"] == paper["paragraph_count"]
+    assert paper["analysis_group_count"] > 0
+    assert paper["analysis_groups_completed"] == paper["analysis_group_count"]
+    assert paper["ocr_duration_seconds"] is not None
+    assert paper["translation_duration_seconds"] is not None
+    assert paper["analysis_duration_seconds"] is not None
+    assert paper["total_duration_seconds"] is not None
+    assert paper["processing_started_at"] is not None
+    assert paper["ocr_completed_at"] is not None
+    assert paper["processing_completed_at"] is not None
 
     detail = client.get(f"/api/papers/{paper['id']}").json()
     assert detail["paragraphs"]

@@ -29,6 +29,16 @@ class PaperResponse(BaseModel):
     read_progress: float = 0
     last_read_position: str | None = None
     error_message: str | None = None
+    translations_completed: int = 0
+    analysis_group_count: int = 0
+    analysis_groups_completed: int = 0
+    ocr_duration_seconds: float | None = None
+    translation_duration_seconds: float | None = None
+    analysis_duration_seconds: float | None = None
+    total_duration_seconds: float | None = None
+    processing_started_at: datetime | None = None
+    ocr_completed_at: datetime | None = None
+    processing_completed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime | None = None
 

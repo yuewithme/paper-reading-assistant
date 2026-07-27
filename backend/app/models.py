@@ -30,6 +30,25 @@ class Paper(Base):
     last_read_position: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="created")
+    translations_completed: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_group_count: Mapped[int] = mapped_column(Integer, default=0)
+    analysis_groups_completed: Mapped[int] = mapped_column(Integer, default=0)
+    ocr_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    translation_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    analysis_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    ocr_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    processing_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

@@ -48,6 +48,16 @@ def migrate_legacy_paper_table(engine: Engine) -> None:
         "read_progress": "FLOAT NOT NULL DEFAULT 0",
         "last_read_position": "VARCHAR(100)",
         "error_message": "TEXT",
+        "translations_completed": "INTEGER NOT NULL DEFAULT 0",
+        "analysis_group_count": "INTEGER NOT NULL DEFAULT 0",
+        "analysis_groups_completed": "INTEGER NOT NULL DEFAULT 0",
+        "ocr_duration_seconds": "FLOAT",
+        "translation_duration_seconds": "FLOAT",
+        "analysis_duration_seconds": "FLOAT",
+        "total_duration_seconds": "FLOAT",
+        "processing_started_at": "DATETIME",
+        "ocr_completed_at": "DATETIME",
+        "processing_completed_at": "DATETIME",
         "updated_at": "DATETIME",
     }
     with engine.begin() as connection:
