@@ -26,6 +26,16 @@ export type PaperSummary = {
   read_progress: number;
   last_read_position: string | null;
   error_message: string | null;
+  translations_completed: number;
+  analysis_group_count: number;
+  analysis_groups_completed: number;
+  ocr_duration_seconds: number | null;
+  translation_duration_seconds: number | null;
+  analysis_duration_seconds: number | null;
+  total_duration_seconds: number | null;
+  processing_started_at: string | null;
+  ocr_completed_at: string | null;
+  processing_completed_at: string | null;
   created_at: string;
   updated_at: string | null;
 };

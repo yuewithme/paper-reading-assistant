@@ -1,9 +1,12 @@
 import hashlib
 import json
+import logging
 import re
 import shutil
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
 from uuid import uuid4
 
@@ -18,7 +21,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from .ai import AIConfigurationError, AIProvider, QwenProvider
@@ -68,6 +71,7 @@ READABLE_BLOCK_TYPES = {
     BlockType.REFERENCE,
 }
 VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
+logger = logging.getLogger(__name__)
 
 
 def normalize_vocabulary(text: str) -> str:
@@ -138,9 +142,21 @@ def create_app(
     def parse_and_store(paper: Paper, session: Session, force_ocr: bool = False) -> None:
         if not paper.file_path:
             raise HTTPException(status_code=409, detail="这条论文记录没有 PDF 文件")
+        paper.processing_started_at = datetime.now(UTC)
+        paper.ocr_completed_at = None
+        paper.processing_completed_at = None
+        paper.ocr_duration_seconds = None
+        paper.translation_duration_seconds = None
+        paper.analysis_duration_seconds = None
+        paper.total_duration_seconds = None
+        paper.translations_completed = 0
+        paper.analysis_group_count = 0
+        paper.analysis_groups_completed = 0
         paper.status = "processing"
         paper.error_message = None
         session.commit()
+        ocr_started = perf_counter()
+        logger.info("pipeline.ocr.start paper_id=%s", paper.id)
         try:
             if app.state.document_parser is None:
                 from .parsing.paddle import PaddleStructureParser
@@ -192,17 +208,32 @@ def create_app(
             paper.title = parsed.title or paper.title
             paper.page_count = parsed.page_count
             paper.paragraph_count = paragraph_index
+            paper.ocr_duration_seconds = round(perf_counter() - ocr_started, 3)
+            paper.ocr_completed_at = datetime.now(UTC)
             paper.status = "ocr_complete" if paragraph_index else "failed"
             paper.error_message = "\n".join(parsed.warnings) or None
             session.commit()
             session.refresh(paper)
+            logger.info(
+                "pipeline.ocr.complete paper_id=%s pages=%d paragraphs=%d seconds=%.3f",
+                paper.id,
+                paper.page_count,
+                paper.paragraph_count,
+                paper.ocr_duration_seconds,
+            )
         except Exception as exc:
             session.rollback()
             paper = session.get(Paper, paper.id)
             if paper is not None:
+                paper.ocr_duration_seconds = round(perf_counter() - ocr_started, 3)
                 paper.status = "failed"
                 paper.error_message = str(exc)
                 session.commit()
+                logger.exception(
+                    "pipeline.ocr.failed paper_id=%s seconds=%.3f",
+                    paper.id,
+                    paper.ocr_duration_seconds,
+                )
             raise HTTPException(status_code=422, detail=f"PDF 解析失败：{exc}") from exc
 
     def process_paper_background(paper_id: str, force_ocr: bool = False) -> None:
@@ -243,6 +274,15 @@ def create_app(
             )
         )
         if existing:
+            paper = get_paper_or_404(paper_id, session)
+            ready_count = sum(group.analysis_status == "ready" for group in existing)
+            if (
+                paper.analysis_group_count != len(existing)
+                or paper.analysis_groups_completed != ready_count
+            ):
+                paper.analysis_group_count = len(existing)
+                paper.analysis_groups_completed = ready_count
+                session.commit()
             return existing
         paragraphs = list(
             session.scalars(
@@ -283,6 +323,9 @@ def create_app(
             for index, paragraph_ids in enumerate(batches)
         ]
         session.add_all(groups)
+        paper = get_paper_or_404(paper_id, session)
+        paper.analysis_group_count = len(groups)
+        paper.analysis_groups_completed = 0
         session.commit()
         return groups
 
@@ -300,17 +343,39 @@ def create_app(
         if paragraph_ids:
             query = query.where(Paragraph.id.in_(paragraph_ids))
         paragraphs = list(session.scalars(query))
+        paper = get_paper_or_404(paper_id, session)
+        paper.translations_completed = int(
+            session.scalar(
+                select(func.count())
+                .select_from(Paragraph)
+                .where(
+                    Paragraph.paper_id == paper_id,
+                    Paragraph.translated_text.is_not(None),
+                )
+            )
+            or 0
+        )
+        session.commit()
         translated_count = 0
         cached_count = 0
         for paragraph in paragraphs:
             if paragraph.translated_text and not force:
                 cached_count += 1
                 continue
-            paragraph.translated_text = app.state.ai_provider.translate(
-                paragraph.source_text
-            )
+            was_translated = paragraph.translated_text is not None
+            call_started = perf_counter()
+            paragraph.translated_text = app.state.ai_provider.translate(paragraph.source_text)
             translated_count += 1
+            if not was_translated:
+                paper.translations_completed += 1
             session.commit()
+            logger.info(
+                "pipeline.translation.item paper_id=%s completed=%d total=%d seconds=%.3f",
+                paper_id,
+                paper.translations_completed,
+                paper.paragraph_count,
+                perf_counter() - call_started,
+            )
         return translated_count, cached_count, paragraphs
 
     def analyze_groups(
@@ -331,10 +396,12 @@ def create_app(
         }
         generated_count = 0
         cached_count = 0
+        paper = get_paper_or_404(paper_id, session)
         for group in groups:
             if group.analysis_text and not force:
                 cached_count += 1
                 continue
+            was_ready = group.analysis_status == "ready" and group.analysis_text is not None
             paragraph_ids = json.loads(group.paragraph_ids_json)
             source = "\n\n".join(
                 paragraphs[paragraph_id].source_text
@@ -343,26 +410,67 @@ def create_app(
             )
             group.analysis_status = "processing"
             session.commit()
+            call_started = perf_counter()
             group.analysis_text = app.state.ai_provider.analyze(source)
             group.analysis_status = "ready"
             generated_count += 1
+            if not was_ready:
+                paper.analysis_groups_completed += 1
             session.commit()
+            logger.info(
+                "pipeline.analysis.item paper_id=%s completed=%d total=%d seconds=%.3f",
+                paper_id,
+                paper.analysis_groups_completed,
+                paper.analysis_group_count,
+                perf_counter() - call_started,
+            )
         return generated_count, cached_count, groups
 
     def enrich_paper(paper_id: str, session: Session) -> None:
         paper = get_paper_or_404(paper_id, session)
         if not active_settings.auto_translate and not active_settings.auto_analyze:
             paper.status = "ready"
+            paper.processing_completed_at = datetime.now(UTC)
+            if paper.processing_started_at is not None:
+                started_at = paper.processing_started_at
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=UTC)
+                paper.total_duration_seconds = round(
+                    (paper.processing_completed_at - started_at).total_seconds(),
+                    3,
+                )
             session.commit()
             return
         paper.status = "enriching"
         paper.error_message = None
         session.commit()
+        logger.info("pipeline.enrichment.start paper_id=%s", paper_id)
         try:
             if active_settings.auto_translate:
+                stage_started = perf_counter()
                 translate_paragraphs(paper_id, session)
+                paper.translation_duration_seconds = round(
+                    perf_counter() - stage_started,
+                    3,
+                )
+                session.commit()
+                logger.info(
+                    "pipeline.translation.complete paper_id=%s count=%d seconds=%.3f",
+                    paper_id,
+                    paper.translations_completed,
+                    paper.translation_duration_seconds,
+                )
             if active_settings.auto_analyze:
+                stage_started = perf_counter()
                 analyze_groups(paper_id, session)
+                paper.analysis_duration_seconds = round(perf_counter() - stage_started, 3)
+                session.commit()
+                logger.info(
+                    "pipeline.analysis.complete paper_id=%s count=%d seconds=%.3f",
+                    paper_id,
+                    paper.analysis_groups_completed,
+                    paper.analysis_duration_seconds,
+                )
         except AIConfigurationError as exc:
             session.rollback()
             paper = get_paper_or_404(paper_id, session)
@@ -379,7 +487,21 @@ def create_app(
             return
         paper.status = "ready"
         paper.error_message = None
+        paper.processing_completed_at = datetime.now(UTC)
+        if paper.processing_started_at is not None:
+            started_at = paper.processing_started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=UTC)
+            paper.total_duration_seconds = round(
+                (paper.processing_completed_at - started_at).total_seconds(),
+                3,
+            )
         session.commit()
+        logger.info(
+            "pipeline.complete paper_id=%s total_seconds=%.3f",
+            paper_id,
+            paper.total_duration_seconds or 0,
+        )
 
     def serialize_message(message: Message) -> MessageResponse:
         return MessageResponse(
