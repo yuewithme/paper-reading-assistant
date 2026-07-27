@@ -13,8 +13,8 @@ import {
   type SemanticGroup,
   type VocabularyItem,
 } from "../api";
+import { AcademicMarkdown } from "./AcademicMarkdown";
 import { AnalysisMarkdown } from "./AnalysisMarkdown";
-import { HighlightedText } from "./HighlightedText";
 import { ChatPanel, type ChatAnchor } from "./ChatPanel";
 import { VocabularyDrawer } from "./VocabularyDrawer";
 
@@ -391,15 +391,15 @@ function BilingualParagraph({
         </a>
         <span>¶ {paragraph.paragraph_index + 1}</span>
       </div>
-      <p className="source-text">
-        <HighlightedText text={paragraph.source_text} vocabulary={vocabulary} />
-      </p>
-      <p className={`translated-text ${paragraph.translated_text ? "" : "is-empty"}`}>
-        <HighlightedText
+      <div className="source-text">
+        <AcademicMarkdown text={paragraph.source_text} vocabulary={vocabulary} />
+      </div>
+      <div className={`translated-text ${paragraph.translated_text ? "" : "is-empty"}`}>
+        <AcademicMarkdown
           text={paragraph.translated_text ?? "等待生成中文翻译"}
           vocabulary={vocabulary}
         />
-      </p>
+      </div>
     </article>
   );
 }

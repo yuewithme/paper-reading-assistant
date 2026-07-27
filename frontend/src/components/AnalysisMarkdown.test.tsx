@@ -50,3 +50,22 @@ test("does not execute raw html returned by the model", () => {
   expect(container.querySelector("script")).not.toBeInTheDocument();
   expect(screen.getByText("安全内容")).toBeInTheDocument();
 });
+
+test("compiles inline and display LaTeX with common delimiters", () => {
+  const { container } = render(
+    <AnalysisMarkdown
+      text={
+        "状态为 $h_{t-1}$，并计算 \\(QK^T\\)。\n\n" +
+        "\\[\\operatorname{Attention}(Q,K,V)=\\operatorname{softmax}(QK^T/\\sqrt{d_k})V\\]"
+      }
+      vocabulary={[]}
+    />,
+  );
+
+  expect(container.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(3);
+  expect(container.querySelector(".katex-display")).toBeInTheDocument();
+  expect(container.textContent).not.toContain("$h_{t-1}$");
+  expect(
+    container.querySelector(".katex-display .katex-html")?.textContent,
+  ).toContain("Attention");
+});

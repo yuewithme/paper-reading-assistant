@@ -3,6 +3,21 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "academic-rendering": [
+            "katex",
+            "react-markdown",
+            "rehype-katex",
+            "remark-gfm",
+            "remark-math",
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {
