@@ -1,6 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { fetchHealth, fetchPapers, type HealthStatus, type PaperSummary } from "./api";
+import {
+  deletePaper,
+  fetchHealth,
+  fetchPaper,
+  fetchPapers,
+  importPaper,
+  type HealthStatus,
+  type PaperDetail,
+  type PaperSummary,
+} from "./api";
 import "./styles.css";
 
 type LoadState = "loading" | "ready" | "offline";
@@ -8,11 +17,16 @@ type LoadState = "loading" | "ready" | "offline";
 export default function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [papers, setPapers] = useState<PaperSummary[]>([]);
+  const [selectedPaper, setSelectedPaper] = useState<PaperDetail | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  const refreshPapers = async () => setPapers(await fetchPapers());
 
   useEffect(() => {
     let active = true;
-
     Promise.all([fetchHealth(), fetchPapers()])
       .then(([healthResult, paperResult]) => {
         if (!active) return;
@@ -20,69 +34,97 @@ export default function App() {
         setPapers(paperResult);
         setLoadState("ready");
       })
-      .catch(() => {
-        if (!active) return;
-        setLoadState("offline");
-      });
-
+      .catch(() => active && setLoadState("offline"));
     return () => {
       active = false;
     };
   }, []);
 
+  const handleImport = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    setNotice("正在保存并解析 PDF…");
+    try {
+      const paper = await importPaper(file);
+      await refreshPapers();
+      setSelectedPaper(await fetchPaper(paper.id));
+      setNotice(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "导入失败");
+    } finally {
+      setBusy(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  };
+
+  const openPaper = async (paper: PaperSummary) => {
+    setBusy(true);
+    try {
+      setSelectedPaper(await fetchPaper(paper.id));
+      setNotice(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "读取论文失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removePaper = async (paper: PaperSummary) => {
+    if (!window.confirm(`删除《${paper.title}》及其本地数据？`)) return;
+    await deletePaper(paper.id);
+    if (selectedPaper?.id === paper.id) setSelectedPaper(null);
+    await refreshPapers();
+  };
+
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            研
-          </span>
-          <div>
-            <p className="eyebrow">PAPER READING STUDIO</p>
+        <button className="brand brand-button" onClick={() => setSelectedPaper(null)}>
+          <span className="brand-mark" aria-hidden="true">研</span>
+          <span>
+            <span className="eyebrow">PAPER READING STUDIO</span>
             <h1>论文辅助研读助手</h1>
-          </div>
-        </div>
-
+          </span>
+        </button>
         <div className="topbar-actions">
           <span className={`service-state service-state--${loadState}`}>
             <span className="service-dot" />
             {loadState === "ready" ? "本地服务在线" : loadState === "offline" ? "后端未连接" : "正在连接"}
           </span>
-          <button className="primary-button" disabled title="将在 PDF 导入阶段开放">
-            导入 PDF
-          </button>
+          <label className={`primary-button ${busy ? "is-disabled" : ""}`}>
+            {busy ? "处理中…" : "导入 PDF"}
+            <input
+              ref={fileInput}
+              className="visually-hidden"
+              type="file"
+              accept="application/pdf,.pdf"
+              disabled={busy}
+              onChange={(event) => void handleImport(event.target.files?.[0])}
+            />
+          </label>
         </div>
       </header>
 
       <main className="workspace">
         <aside className="library-panel">
           <div className="panel-heading">
-            <div>
-              <p className="eyebrow">LIBRARY</p>
-              <h2>我的论文</h2>
-            </div>
+            <div><p className="eyebrow">LIBRARY</p><h2>我的论文</h2></div>
             <span className="paper-count">{papers.length}</span>
           </div>
-
-          {papers.length > 0 ? (
-            <ul className="paper-list">
-              {papers.map((paper) => (
-                <li key={paper.id} className="paper-item">
+          <div className="paper-list" aria-label="论文列表">
+            {papers.map((paper) => (
+              <div className={`paper-item ${selectedPaper?.id === paper.id ? "is-active" : ""}`} key={paper.id}>
+                <button className="paper-open" onClick={() => void openPaper(paper)}>
                   <span className="paper-file-badge">PDF</span>
-                  <div>
-                    <strong>{paper.title}</strong>
-                    <small>{paper.file_name}</small>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="library-empty">
-              <span>01</span>
-              <p>论文会保存在本地，并自动恢复上次阅读位置。</p>
-            </div>
-          )}
-
+                  <span><strong>{paper.title}</strong><small>{paper.page_count} 页 · {paper.paragraph_count} 段</small></span>
+                </button>
+                <button className="icon-button" aria-label={`删除 ${paper.title}`} onClick={() => void removePaper(paper)}>×</button>
+              </div>
+            ))}
+            {papers.length === 0 && (
+              <div className="library-empty"><span>01</span><p>导入英文 PDF，论文和解析结果会保存在本地。</p></div>
+            )}
+          </div>
           <div className="config-card">
             <p>Qwen</p>
             <strong>{health?.llm_configured ? "已配置" : "等待 API Key"}</strong>
@@ -90,49 +132,49 @@ export default function App() {
           </div>
         </aside>
 
-        <section className="welcome-panel">
-          <div className="welcome-copy">
-            <span className="stage-label">阶段 0 · 工程基础</span>
-            <h2>
-              读懂论文，
-              <br />
-              不止是翻译论文。
-            </h2>
-            <p>
-              原文、翻译与深度 AI 解读将在同一阅读流中按语义对齐。划选任何内容，即可直接进入问答。
-            </p>
-          </div>
-
-          <div className="reader-preview" aria-label="双栏阅读布局预览">
-            <div className="preview-column preview-column--paper">
-              <span className="preview-kicker">ORIGINAL + TRANSLATION</span>
-              <div className="preview-line preview-line--long" />
-              <div className="preview-line preview-line--medium" />
-              <div className="preview-translation">
-                <div className="preview-line preview-line--long" />
-                <div className="preview-line preview-line--short" />
-              </div>
-              <div className="preview-line preview-line--medium" />
+        {selectedPaper ? (
+          <section className="structure-panel">
+            <header className="paper-header">
+              <div><p className="eyebrow">STRUCTURED PAPER</p><h1>{selectedPaper.title}</h1></div>
+              <a className="ghost-button" href={`/api/papers/${selectedPaper.id}/file`} target="_blank" rel="noreferrer">原始 PDF</a>
+            </header>
+            {selectedPaper.error_message && <div className="inline-warning">{selectedPaper.error_message}</div>}
+            <div className="structure-summary">
+              <span>{selectedPaper.page_count} 页</span><span>{selectedPaper.paragraph_count} 个内容块</span><span>{selectedPaper.status}</span>
             </div>
-            <div className="preview-column preview-column--analysis">
-              <span className="preview-kicker">DEEP ANALYSIS</span>
-              <div className="analysis-block">
-                <strong>语义解读</strong>
+            <div className="paragraph-preview">
+              {selectedPaper.paragraphs.map((paragraph) => (
+                <article key={paragraph.id}>
+                  <span>PAGE {paragraph.page_number}</span>
+                  <p>{paragraph.source_text}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : (
+          <section className="welcome-panel">
+            <div className="welcome-copy">
+              <span className="stage-label">阶段 1 · PDF 导入与结构化</span>
+              <h2>把 PDF 变成<br />可以精读的内容。</h2>
+              <p>优先读取原生文本层；扫描页自动转入 PaddleOCR。页码、阅读顺序和定位信息会一起保存。</p>
+              {notice && <div className="inline-warning">{notice}</div>}
+            </div>
+            <div className="reader-preview" aria-label="PDF 结构化预览">
+              <div className="preview-column preview-column--paper">
+                <span className="preview-kicker">PDF → DOCUMENT BLOCKS</span>
                 <div className="preview-line preview-line--long" />
                 <div className="preview-line preview-line--medium" />
-                <div className="preview-line preview-line--short" />
+                <div className="preview-translation"><div className="preview-line preview-line--long" /><div className="preview-line preview-line--short" /></div>
+              </div>
+              <div className="preview-column preview-column--analysis">
+                <span className="preview-kicker">PAGE + POSITION</span>
+                <div className="analysis-block"><strong>可定位内容</strong><div className="preview-line preview-line--long" /><div className="preview-line preview-line--medium" /></div>
               </div>
             </div>
-          </div>
-
-          <footer className="workspace-footer">
-            <span>本地优先</span>
-            <span>PaddleOCR</span>
-            <span>Qwen</span>
-          </footer>
-        </section>
+          </section>
+        )}
       </main>
+      {notice && selectedPaper && <div className="toast">{notice}</div>}
     </div>
   );
 }
-
