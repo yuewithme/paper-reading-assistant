@@ -2,6 +2,7 @@ import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createVocabulary,
+  fetchPaper,
   fetchSemanticGroups,
   fetchVocabulary,
   generateAnalysis,
@@ -47,6 +48,13 @@ export function PaperReader({
   const readerRef = useRef<HTMLDivElement>(null);
   const progressTimer = useRef<number | null>(null);
   const restoredPosition = useRef(false);
+  const ocrInProgress = ["queued", "processing"].includes(paper.status);
+  const pipelineActive = [
+    "queued",
+    "processing",
+    "ocr_complete",
+    "enriching",
+  ].includes(paper.status);
   const translated = useMemo(
     () => paper.paragraphs.filter((paragraph) => paragraph.translated_text).length,
     [paper.paragraphs],
@@ -55,10 +63,27 @@ export function PaperReader({
     () => new Map(paper.paragraphs.map((paragraph) => [paragraph.id, paragraph])),
     [paper.paragraphs],
   );
+  const visibleGroups = useMemo<SemanticGroup[]>(
+    () =>
+      groups.length
+        ? groups
+        : paper.paragraphs.map((paragraph, index) => ({
+            id: `pending-${paragraph.id}`,
+            group_index: index,
+            paragraph_ids: [paragraph.id],
+            analysis_text: null,
+            analysis_status: "pending",
+          })),
+    [groups, paper.paragraphs],
+  );
 
   useEffect(() => {
     let active = true;
-    Promise.all([fetchSemanticGroups(paper.id), fetchVocabulary(paper.id)])
+    setGroups([]);
+    const groupRequest = ocrInProgress
+      ? Promise.resolve<SemanticGroup[]>([])
+      : fetchSemanticGroups(paper.id);
+    Promise.all([groupRequest, fetchVocabulary(paper.id)])
       .then(([groupResult, vocabularyResult]) => {
         if (!active) return;
         setGroups(groupResult);
@@ -68,7 +93,38 @@ export function PaperReader({
     return () => {
       active = false;
     };
-  }, [paper.id]);
+  }, [paper.id, ocrInProgress]);
+
+  useEffect(() => {
+    if (!pipelineActive) return;
+    let active = true;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const nextPaper = await fetchPaper(paper.id);
+        if (!active) return;
+        onPaperChange(nextPaper);
+        if (!["queued", "processing"].includes(nextPaper.status)) {
+          const nextGroups = await fetchSemanticGroups(paper.id);
+          if (active) setGroups(nextGroups);
+        }
+      } catch (error) {
+        if (active) {
+          setNotice(error instanceof Error ? error.message : "刷新处理进度失败");
+        }
+      } finally {
+        refreshing = false;
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [onPaperChange, paper.id, pipelineActive]);
 
   useEffect(() => {
     if (restoredPosition.current || !groups.length || !paper.last_read_position) return;
@@ -188,13 +244,17 @@ export function PaperReader({
           <p className="eyebrow">BILINGUAL READER + DEEP ANALYSIS</p>
           <h1>{paper.title}</h1>
           <div className="reader-meta">
-            <span>{paper.page_count} 页</span><span>{paper.paragraph_count} 段</span>
+            <span>
+              {ocrInProgress
+                ? `${paper.pages_processed}/${paper.page_count || "?"} 页`
+                : `${paper.page_count} 页`}
+            </span><span>{paper.paragraph_count} 段</span>
             <span>{translated}/{paper.paragraph_count} 已翻译</span><span>{groups.length} 个语义块</span>
           </div>
         </div>
         <div className="reader-actions">
           <a className="ghost-button" href={`/api/papers/${paper.id}/file`} target="_blank" rel="noreferrer">原始 PDF</a>
-          <button className="ghost-button action-button" onClick={() => void generateTranslations()} disabled={busyTask !== null}>
+          <button className="ghost-button action-button" onClick={() => void generateTranslations()} disabled={busyTask !== null || pipelineActive}>
             {busyTask === "translation" ? "翻译中…" : translated ? "补全译文" : "生成翻译"}
           </button>
           <button className="ghost-button action-button" onClick={() => setVocabularyOpen(true)}>
@@ -209,12 +269,19 @@ export function PaperReader({
           >
             问 AI
           </button>
-          <button className="primary-button" onClick={() => void generateDeepAnalysis()} disabled={busyTask !== null}>
+          <button className="primary-button" onClick={() => void generateDeepAnalysis()} disabled={busyTask !== null || pipelineActive}>
             {busyTask === "analysis" ? "解读中…" : "生成深度解读"}
           </button>
         </div>
       </header>
       {!llmConfigured && <div className="inline-warning reader-warning">请在 `.env` 填写 DASHSCOPE_API_KEY，翻译和深度解读结果会自动缓存。</div>}
+      {pipelineActive && (
+        <div className="reader-notice">
+          {ocrInProgress
+            ? `PaddleOCR 正在逐页识别：已完成 ${paper.pages_processed}/${paper.page_count || "?"} 页，当前 ${paper.paragraph_count} 段可阅读。`
+            : `Qwen 正在后台生成：译文 ${translated}/${paper.paragraph_count}，深度解读 ${paper.analysis_groups_completed}/${paper.analysis_group_count || "?"}。`}
+        </div>
+      )}
       {notice && <div className="reader-notice">{notice}</div>}
 
       <div
@@ -226,7 +293,7 @@ export function PaperReader({
         <div className="column-label column-label--left">原文 + 中文翻译</div>
         <div className="column-divider" />
         <div className="column-label column-label--right">深度 AI 解读</div>
-        {groups.map((group) => {
+        {visibleGroups.map((group) => {
           const paragraphs = group.paragraph_ids
             .map((id) => paragraphMap.get(id))
             .filter((item): item is Paragraph => Boolean(item));
@@ -258,7 +325,11 @@ export function PaperReader({
                 {group.analysis_text ? (
                   <p><HighlightedText text={group.analysis_text} vocabulary={vocabulary} /></p>
                 ) : (
-                  <p className="analysis-empty">等待生成深度解读。一个解读可对应左侧多个自然段。</p>
+                  <p className="analysis-empty">
+                    {ocrInProgress
+                      ? "本页原文已可阅读；全文 OCR 完成后会自动生成译文和深度解读。"
+                      : "正在生成深度解读。一个解读可对应左侧多个自然段。"}
+                  </p>
                 )}
               </aside>
             </div>

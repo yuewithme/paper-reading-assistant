@@ -8,6 +8,7 @@ dependencies = [
     "openai>=2,<3",
     "paddleocr[doc-parser]>=3.7,<4",
     "paddlepaddle==3.2.2",
+    "pypdfium2>=4,<6",
     "pydantic-settings>=2.10,<3",
     "python-multipart>=0.0.20,<1",
     "sqlalchemy>=2.0.40,<3",

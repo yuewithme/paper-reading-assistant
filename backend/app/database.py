@@ -43,6 +43,7 @@ def migrate_legacy_paper_table(engine: Engine) -> None:
         "file_path": "VARCHAR(1000)",
         "file_hash": "VARCHAR(64)",
         "page_count": "INTEGER NOT NULL DEFAULT 0",
+        "pages_processed": "INTEGER NOT NULL DEFAULT 0",
         "paragraph_count": "INTEGER NOT NULL DEFAULT 0",
         "vocabulary_count": "INTEGER NOT NULL DEFAULT 0",
         "read_progress": "FLOAT NOT NULL DEFAULT 0",

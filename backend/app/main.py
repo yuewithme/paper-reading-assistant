@@ -156,6 +156,7 @@ def create_app(
         paper.translations_completed = 0
         paper.analysis_group_count = 0
         paper.analysis_groups_completed = 0
+        paper.pages_processed = 0
         paper.status = "processing"
         paper.error_message = None
         session.commit()
@@ -179,51 +180,88 @@ def create_app(
                         use_region_detection=active_settings.ocr_use_region_detection,
                     )
                 )
-            parsed = app.state.document_parser.parse(
-                Path(paper.file_path),
-                force_ocr=force_ocr,
-            )
-            session.execute(
-                delete(Paragraph).where(Paragraph.paper_id == paper.id)
-            )
-            session.execute(
-                delete(DocumentBlockRecord).where(DocumentBlockRecord.paper_id == paper.id)
-            )
-            session.execute(
-                delete(SemanticGroup).where(SemanticGroup.paper_id == paper.id)
-            )
-            paragraph_index = 0
-            for block in parsed.blocks:
-                record = DocumentBlockRecord(
-                    paper_id=paper.id,
-                    page_number=block.page_number,
-                    block_type=block.block_type.value,
-                    reading_order=block.reading_order,
-                    source_text=block.text,
-                    bbox_json=block.bbox.model_dump_json(),
-                    parser=block.parser,
+            parse_pages = getattr(app.state.document_parser, "parse_pages", None)
+            if callable(parse_pages):
+                parsed_pages = parse_pages(
+                    Path(paper.file_path),
+                    force_ocr=force_ocr,
                 )
-                session.add(record)
-                session.flush()
-                if block.block_type in READABLE_BLOCK_TYPES:
-                    session.add(
-                        Paragraph(
-                            paper_id=paper.id,
-                            block_id=record.id,
-                            paragraph_index=paragraph_index,
-                            source_text=block.text,
-                            page_number=block.page_number,
-                            source_bbox_json=block.bbox.model_dump_json(),
+            else:
+                parsed_pages = iter(
+                    [
+                        app.state.document_parser.parse(
+                            Path(paper.file_path),
+                            force_ocr=force_ocr,
+                        )
+                    ]
+                )
+            paragraph_index = 0
+            reading_order = 0
+            found_page = False
+            warnings: list[str] = []
+            for parsed_page in parsed_pages:
+                if not found_page:
+                    session.execute(
+                        delete(SemanticGroup).where(SemanticGroup.paper_id == paper.id)
+                    )
+                    session.execute(
+                        delete(Paragraph).where(Paragraph.paper_id == paper.id)
+                    )
+                    session.execute(
+                        delete(DocumentBlockRecord).where(
+                            DocumentBlockRecord.paper_id == paper.id
                         )
                     )
-                    paragraph_index += 1
-            paper.title = parsed.title or paper.title
-            paper.page_count = parsed.page_count
-            paper.paragraph_count = paragraph_index
+                    paper.page_count = 0
+                    paper.paragraph_count = 0
+                    found_page = True
+                warnings.extend(parsed_page.warnings)
+                page_number = paper.pages_processed + 1
+                for block in parsed_page.blocks:
+                    page_number = max(page_number, block.page_number)
+                    record = DocumentBlockRecord(
+                        paper_id=paper.id,
+                        page_number=block.page_number,
+                        block_type=block.block_type.value,
+                        reading_order=reading_order,
+                        source_text=block.text,
+                        bbox_json=block.bbox.model_dump_json(),
+                        parser=block.parser,
+                    )
+                    reading_order += 1
+                    session.add(record)
+                    session.flush()
+                    if block.block_type in READABLE_BLOCK_TYPES:
+                        session.add(
+                            Paragraph(
+                                paper_id=paper.id,
+                                block_id=record.id,
+                                paragraph_index=paragraph_index,
+                                source_text=block.text,
+                                page_number=block.page_number,
+                                source_bbox_json=block.bbox.model_dump_json(),
+                            )
+                        )
+                        paragraph_index += 1
+                if parsed_page.title:
+                    paper.title = parsed_page.title
+                paper.page_count = max(paper.page_count, parsed_page.page_count)
+                paper.pages_processed = max(paper.pages_processed, page_number)
+                paper.paragraph_count = paragraph_index
+                session.commit()
+                logger.info(
+                    "pipeline.ocr.page paper_id=%s page=%d total=%d paragraphs=%d",
+                    paper.id,
+                    paper.pages_processed,
+                    paper.page_count,
+                    paper.paragraph_count,
+                )
+            if not found_page:
+                raise RuntimeError("PaddleOCR 没有返回任何页面结果")
             paper.ocr_duration_seconds = round(perf_counter() - ocr_started, 3)
             paper.ocr_completed_at = datetime.now(UTC)
             paper.status = "ocr_complete" if paragraph_index else "failed"
-            paper.error_message = "\n".join(parsed.warnings) or None
+            paper.error_message = "\n".join(warnings) or None
             session.commit()
             session.refresh(paper)
             logger.info(
@@ -819,7 +857,9 @@ def create_app(
         paper_id: str,
         session: SessionDependency,
     ) -> list[SemanticGroupResponse]:
-        get_paper_or_404(paper_id, session)
+        paper = get_paper_or_404(paper_id, session)
+        if paper.status in {"queued", "processing"}:
+            return []
         return [serialize_group(group) for group in ensure_semantic_groups(paper_id, session)]
 
     @app.post(

@@ -1,5 +1,8 @@
 import sys
+from io import BytesIO
 from types import ModuleType
+
+from reportlab.pdfgen.canvas import Canvas
 
 from app.parsing import BlockType, DocumentParsingService
 from app.parsing.paddle import PaddleStructureParser
@@ -94,6 +97,89 @@ def test_paddle_result_is_mapped_to_stable_document_model(tmp_path) -> None:
     assert all(block.page_number == 1 for block in parsed.blocks)
     assert parsed.blocks[0].bbox.x1 == 570
     assert all(block.parser == "paddleocr-ppstructurev3" for block in parsed.blocks)
+
+
+def test_paddle_pages_are_yielded_incrementally(tmp_path) -> None:
+    class IterPipeline:
+        def predict(self, input: str):
+            raise AssertionError("parse_pages should prefer predict_iter")
+
+        def predict_iter(self, input: str):
+            assert input.endswith(".pdf")
+            for page_index in range(2):
+                yield {
+                    "res": {
+                        "page_index": page_index,
+                        "page_count": 2,
+                        "parsing_res_list": [
+                            {
+                                "block_bbox": [30, 20, 570, 80],
+                                "block_label": "doc_title" if page_index == 0 else "text",
+                                "block_content": (
+                                    "A Streaming Paper"
+                                    if page_index == 0
+                                    else "Second page content."
+                                ),
+                            }
+                        ],
+                    }
+                }
+
+    pdf_path = tmp_path / "streaming.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+
+    pages = list(PaddleStructureParser(pipeline=IterPipeline()).parse_pages(pdf_path))
+
+    assert len(pages) == 2
+    assert pages[0].title == "A Streaming Paper"
+    assert pages[0].blocks[0].page_number == 1
+    assert pages[1].blocks[0].page_number == 2
+
+
+def test_pdf_is_rendered_and_sent_to_paddle_one_page_at_a_time(tmp_path) -> None:
+    class ImagePipeline:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def predict(self, input):
+            raise AssertionError("page rendering should use predict_iter")
+
+        def predict_iter(self, input):
+            self.calls += 1
+            assert input.ndim == 3
+            assert input.shape[2] == 3
+            yield {
+                "res": {
+                    "page_index": 0,
+                    "page_count": 1,
+                    "parsing_res_list": [
+                        {
+                            "block_bbox": [30, 20, 570, 80],
+                            "block_label": "text",
+                            "block_content": f"Rendered page {self.calls}",
+                        }
+                    ],
+                }
+            }
+
+    buffer = BytesIO()
+    canvas = Canvas(buffer)
+    canvas.drawString(72, 760, "Page one")
+    canvas.showPage()
+    canvas.drawString(72, 760, "Page two")
+    canvas.showPage()
+    canvas.save()
+    pdf_path = tmp_path / "two-pages.pdf"
+    pdf_path.write_bytes(buffer.getvalue())
+    pipeline = ImagePipeline()
+    parser = PaddleStructureParser(pipeline=pipeline)
+    parser._render_pdf_pages = True
+
+    pages = list(parser.parse_pages(pdf_path))
+
+    assert pipeline.calls == 2
+    assert [page.blocks[0].page_number for page in pages] == [1, 2]
+    assert [page.page_count for page in pages] == [2, 2]
 
 
 def test_publication_boilerplate_is_not_selected_as_document_title(tmp_path) -> None:

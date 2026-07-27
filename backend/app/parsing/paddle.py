@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,7 @@ LABEL_MAP = {
     "footnote": BlockType.FOOTNOTE,
     "reference": BlockType.REFERENCE,
 }
+PDF_RENDER_SCALE = 2.0
 
 
 def _result_payload(result: Any) -> dict[str, Any]:
@@ -233,6 +234,7 @@ class PaddleStructureParser:
         table_structure_model: str = "SLANet_plus",
         use_region_detection: bool = False,
     ) -> None:
+        self._render_pdf_pages = pipeline is None
         if pipeline is not None:
             self._pipeline = pipeline
             return
@@ -280,65 +282,111 @@ class PaddleStructureParser:
             return False
         return True
 
-    def parse(self, pdf_path: Path) -> ParsedDocument:
+    def _page_inputs(self, pdf_path: Path) -> Iterator[tuple[int | None, int | None, Any]]:
+        if not self._render_pdf_pages:
+            yield None, None, str(pdf_path)
+            return
         try:
-            raw_results: Iterable[Any] = self._pipeline.predict(input=str(pdf_path))
+            import numpy as np
+            import pypdfium2 as pdfium
+        except ImportError as exc:
+            raise RuntimeError("PDF 逐页渲染依赖未安装") from exc
+        document = pdfium.PdfDocument(str(pdf_path))
+        try:
+            page_count = len(document)
+            for page_index in range(page_count):
+                page = document[page_index]
+                bitmap = page.render(scale=PDF_RENDER_SCALE)
+                image = np.asarray(bitmap.to_pil().convert("RGB")).copy()
+                bitmap.close()
+                page.close()
+                yield page_index + 1, page_count, image
+        finally:
+            document.close()
+
+    def parse_pages(self, pdf_path: Path) -> Iterator[ParsedDocument]:
+        predict = getattr(self._pipeline, "predict_iter", self._pipeline.predict)
+        found_page = False
+        result_index = 0
+        try:
+            for input_page_number, input_page_count, page_input in self._page_inputs(pdf_path):
+                raw_results: Iterable[Any] = predict(input=page_input)
+                for result in raw_results:
+                    found_page = True
+                    payload = _result_payload(result)
+                    raw_page_index = payload.get("page_index")
+                    page_number = input_page_number or (
+                        int(raw_page_index) + 1
+                        if raw_page_index is not None
+                        else result_index + 1
+                    )
+                    page_count = input_page_count or max(
+                        page_number,
+                        int(payload.get("page_count") or page_number),
+                    )
+                    result_index += 1
+                    layout_items = payload.get("layout_det_res", {}).get("boxes", [])
+                    parsing_items = payload.get("parsing_res_list", [])
+                    items = parsing_items or layout_items
+                    blocks: list[DocumentBlock] = []
+                    for item in items:
+                        label = str(item.get("block_label") or item.get("label") or "text")
+                        content = (
+                            item.get("block_content")
+                            or item.get("text")
+                            or item.get("content")
+                            or ""
+                        )
+                        text = (
+                            _normalize_table(content)
+                            if label == "table"
+                            else _normalize_text(content)
+                        )
+                        if not text:
+                            continue
+                        coords = (
+                            item.get("block_bbox")
+                            if item.get("block_bbox") is not None
+                            else item.get("coordinate")
+                        )
+                        blocks.append(
+                            DocumentBlock(
+                                page_number=page_number,
+                                block_type=LABEL_MAP.get(label, BlockType.UNKNOWN),
+                                reading_order=len(blocks),
+                                text=text,
+                                bbox=_bbox(coords),
+                                confidence=item.get("score"),
+                                parser=self.name,
+                            )
+                        )
+                    blocks = _restore_reading_order(blocks)
+                    yield ParsedDocument(
+                        title=_select_document_title(
+                            blocks,
+                            pdf_path.stem if page_number == 1 else "",
+                        ),
+                        page_count=page_count,
+                        blocks=blocks,
+                        parser=self.name,
+                        used_ocr=True,
+                    )
         except Exception as exc:
             raise RuntimeError(f"PaddleOCR 识别失败：{exc}") from exc
-        blocks: list[DocumentBlock] = []
-        page_count = 0
 
-        for result_index, result in enumerate(raw_results):
-            payload = _result_payload(result)
-            raw_page_index = payload.get("page_index")
-            page_number = (
-                int(raw_page_index) + 1 if raw_page_index is not None else result_index + 1
-            )
-            page_count = max(page_count, int(payload.get("page_count") or page_number))
-            layout_items = payload.get("layout_det_res", {}).get("boxes", [])
-            parsing_items = payload.get("parsing_res_list", [])
-            items = parsing_items or layout_items
-            for item in items:
-                label = str(item.get("block_label") or item.get("label") or "text")
-                content = (
-                    item.get("block_content")
-                    or item.get("text")
-                    or item.get("content")
-                    or ""
-                )
-                text = (
-                    _normalize_table(content)
-                    if label == "table"
-                    else _normalize_text(content)
-                )
-                if not text:
-                    continue
-                coords = (
-                    item.get("block_bbox")
-                    if item.get("block_bbox") is not None
-                    else item.get("coordinate")
-                )
-                blocks.append(
-                    DocumentBlock(
-                        page_number=page_number,
-                        block_type=LABEL_MAP.get(label, BlockType.UNKNOWN),
-                        reading_order=len(blocks),
-                        text=text,
-                        bbox=_bbox(coords),
-                        confidence=item.get("score"),
-                        parser=self.name,
-                    )
-                )
-
-        if page_count == 0:
+        if not found_page:
             raise RuntimeError("PaddleOCR 没有返回任何页面结果")
+
+    def parse(self, pdf_path: Path) -> ParsedDocument:
+        pages = list(self.parse_pages(pdf_path))
+        blocks = [block for page in pages for block in page.blocks]
         if not blocks:
             raise RuntimeError("PaddleOCR 完成了页面处理，但没有识别到可阅读内容")
         blocks = _restore_reading_order(blocks)
         title = _select_document_title(blocks, pdf_path.stem)
         return ParsedDocument(
             title=title[:500],
-            page_count=page_count,
+            page_count=max(page.page_count for page in pages),
             blocks=blocks,
             parser=self.name,
             used_ocr=True,

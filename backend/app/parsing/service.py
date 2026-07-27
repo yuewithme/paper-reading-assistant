@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 from .paddle import PaddleStructureParser
@@ -15,3 +16,13 @@ class DocumentParsingService:
         del force_ocr
         parser = self.parser or PaddleStructureParser()
         return parser.parse(pdf_path)
+
+    def parse_pages(
+        self,
+        pdf_path: Path,
+        force_ocr: bool = False,
+    ) -> Iterator[ParsedDocument]:
+        # ``force_ocr`` is retained for API compatibility. OCR is now always used.
+        del force_ocr
+        parser = self.parser or PaddleStructureParser()
+        yield from parser.parse_pages(pdf_path)
