@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import delete, select
@@ -38,6 +46,7 @@ from .schemas import (
     PaperCreate,
     PaperDetailResponse,
     PaperResponse,
+    ReadingProgressUpdate,
     SemanticGroupResponse,
     TranslationRequest,
     TranslationResponse,
@@ -94,7 +103,7 @@ def create_app(
 
     app = FastAPI(
         title="论文辅助研读助手 API",
-        version="0.2.0",
+        version="1.0.0",
         description="Local-first API for bilingual paper reading and AI analysis.",
     )
     app.state.settings = active_settings
@@ -178,6 +187,18 @@ def create_app(
                 paper.error_message = str(exc)
                 session.commit()
             raise HTTPException(status_code=422, detail=f"PDF 解析失败：{exc}") from exc
+
+    def process_paper_background(paper_id: str, force_ocr: bool = False) -> None:
+        session = session_factory()
+        try:
+            paper = session.get(Paper, paper_id)
+            if paper is not None:
+                parse_and_store(paper, session, force_ocr=force_ocr)
+        except HTTPException:
+            # parse_and_store has already persisted the actionable failure state.
+            pass
+        finally:
+            session.close()
 
     def serialize_group(group: SemanticGroup) -> SemanticGroupResponse:
         return SemanticGroupResponse(
@@ -353,7 +374,9 @@ def create_app(
     )
     async def import_paper(
         session: SessionDependency,
+        background_tasks: BackgroundTasks,
         file: Annotated[UploadFile, File()],
+        background: bool = False,
     ) -> Paper:
         if not file.filename or not file.filename.casefold().endswith(".pdf"):
             raise HTTPException(status_code=415, detail="只支持 PDF 文件")
@@ -386,7 +409,10 @@ def create_app(
         session.add(paper)
         session.commit()
         session.refresh(paper)
-        parse_and_store(paper, session)
+        if background:
+            background_tasks.add_task(process_paper_background, paper.id)
+        else:
+            parse_and_store(paper, session)
         return paper
 
     @app.get("/api/papers/{paper_id}", response_model=PaperDetailResponse)
@@ -722,14 +748,38 @@ def create_app(
             filename=paper.file_name,
         )
 
+    @app.patch(
+        "/api/papers/{paper_id}/progress",
+        response_model=PaperResponse,
+    )
+    def update_reading_progress(
+        paper_id: str,
+        payload: ReadingProgressUpdate,
+        session: SessionDependency,
+    ) -> Paper:
+        paper = get_paper_or_404(paper_id, session)
+        paper.read_progress = payload.read_progress
+        paper.last_read_position = payload.last_read_position
+        session.commit()
+        session.refresh(paper)
+        return paper
+
     @app.post("/api/papers/{paper_id}/reparse", response_model=PaperResponse)
     def reparse_paper(
         paper_id: str,
         session: SessionDependency,
+        background_tasks: BackgroundTasks,
         force_ocr: bool = False,
+        background: bool = False,
     ) -> Paper:
         paper = get_paper_or_404(paper_id, session)
-        parse_and_store(paper, session, force_ocr=force_ocr)
+        if background:
+            paper.status = "queued"
+            paper.error_message = None
+            session.commit()
+            background_tasks.add_task(process_paper_background, paper.id, force_ocr)
+        else:
+            parse_and_store(paper, session, force_ocr=force_ocr)
         return paper
 
     @app.delete("/api/papers/{paper_id}", status_code=status.HTTP_204_NO_CONTENT)

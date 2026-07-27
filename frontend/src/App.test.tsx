@@ -27,6 +27,6 @@ test("renders the paper library and import control", async () => {
 
   expect(screen.getByRole("heading", { name: "论文辅助研读助手" })).toBeInTheDocument();
   expect(await screen.findByText("等待 API Key")).toBeInTheDocument();
-  expect(screen.getByText("阶段 1 · PDF 导入与结构化")).toBeInTheDocument();
+  expect(screen.getByText("1.0 · LOCAL PAPER READING STUDIO")).toBeInTheDocument();
   expect(screen.getByText("导入 PDF")).toBeInTheDocument();
 });

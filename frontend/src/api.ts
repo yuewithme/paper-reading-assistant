@@ -24,6 +24,7 @@ export type PaperSummary = {
   paragraph_count: number;
   vocabulary_count: number;
   read_progress: number;
+  last_read_position: string | null;
   error_message: string | null;
   created_at: string;
   updated_at: string | null;
@@ -105,11 +106,42 @@ export function fetchPaper(id: string): Promise<PaperDetail> {
 export function importPaper(file: File): Promise<PaperSummary> {
   const body = new FormData();
   body.append("file", file);
-  return request<PaperSummary>("/api/papers/import", { method: "POST", body });
+  return request<PaperSummary>("/api/papers/import?background=true", { method: "POST", body });
 }
 
 export function deletePaper(id: string): Promise<void> {
   return request<void>(`/api/papers/${id}`, { method: "DELETE" });
+}
+
+export async function waitForPaper(id: string, attempts = 120): Promise<PaperDetail> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const paper = await fetchPaper(id);
+    if (!["queued", "processing"].includes(paper.status)) return paper;
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+  throw new Error("解析仍在后台进行，请稍后重新打开论文");
+}
+
+export function reparsePaper(id: string, forceOcr = false): Promise<PaperSummary> {
+  return request<PaperSummary>(
+    `/api/papers/${id}/reparse?background=true&force_ocr=${forceOcr}`,
+    { method: "POST" },
+  );
+}
+
+export function saveReadingProgress(
+  id: string,
+  readProgress: number,
+  lastReadPosition: string | null,
+): Promise<PaperSummary> {
+  return request<PaperSummary>(`/api/papers/${id}/progress`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      read_progress: readProgress,
+      last_read_position: lastReadPosition,
+    }),
+  });
 }
 
 export function translatePaper(

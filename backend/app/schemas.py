@@ -27,6 +27,7 @@ class PaperResponse(BaseModel):
     paragraph_count: int = 0
     vocabulary_count: int = 0
     read_progress: float = 0
+    last_read_position: str | None = None
     error_message: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
@@ -139,3 +140,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation: ConversationResponse
     answer: MessageResponse
+
+
+class ReadingProgressUpdate(BaseModel):
+    read_progress: float = Field(ge=0, le=1)
+    last_read_position: str | None = Field(default=None, max_length=100)

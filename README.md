@@ -10,15 +10,15 @@
 
 ## 当前状态
 
-项目正在按阶段开发。
+第一版阶段 0–6 已完成：
 
-- 阶段 0：工程基础
-- 阶段 0.5：PaddleOCR PP-StructureV3 解析验证
-- 阶段 1：PDF 导入与结构化
-- 阶段 2：双语阅读
-- 阶段 3：语义分组与深度解读
-- 阶段 4：个人词汇
-- 阶段 5：AI 问答
+- PDF 后台导入、文件去重和原生文本层解析；
+- 扫描页的 PaddleOCR PP-StructureV3 可选解析路径；
+- 原文下方逐段中文翻译及本地结果缓存；
+- 按语义块组织的默认深度解读和左右联动；
+- 主动划词收藏、语境释义、掌握状态和全文多色高亮；
+- 选中文本右键进入 AI 问答，自动组合相邻段落和全文相关内容；
+- 论文证据定位、连续对话、阅读进度恢复和失败重试。
 
 详细计划见：
 
@@ -43,18 +43,31 @@ Copy-Item .env.example .env
 
 在 `.env` 中填写 `DASHSCOPE_API_KEY`。没有 Key 时也可以启动应用，只是 AI 功能不可用。
 
-### 2. 启动后端
+### 2. 安装后端
 
 项目锁定 Python 3.12，由 uv 管理：
 
 ```powershell
 uv sync --project backend --python 3.12
+```
+
+需要识别扫描 PDF 时安装 PaddleOCR 可选依赖：
+
+```powershell
+uv sync --project backend --python 3.12 --extra ocr
+```
+
+PaddleOCR 第一次运行会下载模型。只阅读带文本层的 PDF 时可以不安装该可选依赖。
+
+### 3. 启动后端
+
+```powershell
 uv run --project backend uvicorn app.main:app --app-dir backend --reload
 ```
 
 后端地址：`http://127.0.0.1:8000`
 
-### 3. 启动前端
+### 4. 启动前端
 
 ```powershell
 npm install --prefix frontend
@@ -67,7 +80,9 @@ npm run dev --prefix frontend
 
 ```powershell
 uv run --project backend pytest backend/tests
+uv run --project backend ruff check backend
 npm run test --prefix frontend
+npm run build --prefix frontend
 ```
 
 ## 数据与密钥
@@ -77,3 +92,12 @@ npm run test --prefix frontend
 - 原始论文和后续 OCR 缓存均保存在本地忽略目录。
 - 仓库只保留 `.env.example` 作为配置说明。
 
+## Qwen 配置
+
+默认使用阿里云百炼北京地域的 OpenAI 兼容接口。模型可在 `.env` 中分别配置：
+
+- `QWEN_TRANSLATION_MODEL`：逐段翻译；
+- `QWEN_ANALYSIS_MODEL`：深度解读；
+- `QWEN_CHAT_MODEL`：论文问答。
+
+修改 `.env` 后需要重启后端。应用不会把 API Key 返回给前端。

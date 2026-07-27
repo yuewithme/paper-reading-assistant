@@ -6,6 +6,8 @@ import {
   fetchPaper,
   fetchPapers,
   importPaper,
+  reparsePaper,
+  waitForPaper,
   type HealthStatus,
   type PaperDetail,
   type PaperSummary,
@@ -22,6 +24,7 @@ export default function App() {
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refreshPapers = async () => setPapers(await fetchPapers());
@@ -48,7 +51,8 @@ export default function App() {
     try {
       const paper = await importPaper(file);
       await refreshPapers();
-      setSelectedPaper(await fetchPaper(paper.id));
+      setSelectedPaper(await waitForPaper(paper.id));
+      await refreshPapers();
       setNotice(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "导入失败");
@@ -61,10 +65,29 @@ export default function App() {
   const openPaper = async (paper: PaperSummary) => {
     setBusy(true);
     try {
-      setSelectedPaper(await fetchPaper(paper.id));
+      setSelectedPaper(
+        ["queued", "processing"].includes(paper.status)
+          ? await waitForPaper(paper.id)
+          : await fetchPaper(paper.id),
+      );
       setNotice(null);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "读取论文失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retryPaper = async (paper: PaperSummary, forceOcr = false) => {
+    setBusy(true);
+    setNotice(forceOcr ? "正在使用 OCR 重新解析…" : "正在重新解析论文…");
+    try {
+      await reparsePaper(paper.id, forceOcr);
+      setSelectedPaper(await waitForPaper(paper.id));
+      await refreshPapers();
+      setNotice(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "重新解析失败");
     } finally {
       setBusy(false);
     }
@@ -92,6 +115,7 @@ export default function App() {
             <span className="service-dot" />
             {loadState === "ready" ? "本地服务在线" : loadState === "offline" ? "后端未连接" : "正在连接"}
           </span>
+          <button className="ghost-button action-button" onClick={() => setSettingsOpen(true)}>设置</button>
           <label className={`primary-button ${busy ? "is-disabled" : ""}`}>
             {busy ? "处理中…" : "导入 PDF"}
             <input
@@ -117,8 +141,18 @@ export default function App() {
               <div className={`paper-item ${selectedPaper?.id === paper.id ? "is-active" : ""}`} key={paper.id}>
                 <button className="paper-open" onClick={() => void openPaper(paper)}>
                   <span className="paper-file-badge">PDF</span>
-                  <span><strong>{paper.title}</strong><small>{paper.page_count} 页 · {paper.paragraph_count} 段</small></span>
+                  <span>
+                    <strong>{paper.title}</strong>
+                    <small>
+                      {["queued", "processing"].includes(paper.status)
+                        ? "后台解析中…"
+                        : `${paper.page_count} 页 · ${paper.paragraph_count} 段 · ${Math.round(paper.read_progress * 100)}%`}
+                    </small>
+                  </span>
                 </button>
+                {["failed", "needs_ocr"].includes(paper.status) && (
+                  <button className="retry-button" onClick={() => void retryPaper(paper, paper.status === "needs_ocr")}>重试</button>
+                )}
                 <button className="icon-button" aria-label={`删除 ${paper.title}`} onClick={() => void removePaper(paper)}>×</button>
               </div>
             ))}
@@ -142,9 +176,9 @@ export default function App() {
         ) : (
           <section className="welcome-panel">
             <div className="welcome-copy">
-              <span className="stage-label">阶段 1 · PDF 导入与结构化</span>
-              <h2>把 PDF 变成<br />可以精读的内容。</h2>
-              <p>优先读取原生文本层；扫描页自动转入 PaddleOCR。页码、阅读顺序和定位信息会一起保存。</p>
+              <span className="stage-label">1.0 · LOCAL PAPER READING STUDIO</span>
+              <h2>读懂论文，<br />不止是翻译论文。</h2>
+              <p>导入 PDF 后，原文、译文、深度解读、主动词汇与 AI 问答会保存在同一个本地阅读工作台。</p>
               {notice && <div className="inline-warning">{notice}</div>}
             </div>
             <div className="reader-preview" aria-label="PDF 结构化预览">
@@ -163,6 +197,27 @@ export default function App() {
         )}
       </main>
       {notice && selectedPaper && <div className="toast">{notice}</div>}
+      {settingsOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setSettingsOpen(false)}>
+          <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div><p className="eyebrow">LOCAL SETTINGS</p><h2>运行设置</h2></div>
+              <button className="icon-button" aria-label="关闭设置" onClick={() => setSettingsOpen(false)}>×</button>
+            </header>
+            <dl>
+              <div><dt>本地 API</dt><dd>{loadState === "ready" ? "运行正常" : "未连接"}</dd></div>
+              <div><dt>Qwen</dt><dd>{health?.llm_configured ? "API Key 已加载" : "等待 DASHSCOPE_API_KEY"}</dd></div>
+              <div><dt>数据位置</dt><dd>项目根目录 / data</dd></div>
+              <div><dt>OCR</dt><dd>PaddleOCR PP-StructureV3（可选依赖）</dd></div>
+            </dl>
+            <div className="settings-code">
+              <span>在根目录创建 `.env`，填写：</span>
+              <code>DASHSCOPE_API_KEY=你的Key</code>
+            </div>
+            <p>修改 `.env` 后重启后端即可。密钥不会显示在页面，也不会提交到 Git。</p>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
