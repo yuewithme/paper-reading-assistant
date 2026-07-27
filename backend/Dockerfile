@@ -4,6 +4,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_DEFAULT_INDEX="https://mirrors.cloud.tencent.com/pypi/simple" \
+    PIP_INDEX_URL="https://mirrors.cloud.tencent.com/pypi/simple" \
     PATH="/app/backend/.venv/bin:${PATH}"
 
 RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/debian.sources \
