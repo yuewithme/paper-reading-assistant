@@ -10,6 +10,7 @@ import {
   type PaperDetail,
   type PaperSummary,
 } from "./api";
+import { PaperReader } from "./components/PaperReader";
 import "./styles.css";
 
 type LoadState = "loading" | "ready" | "offline";
@@ -133,24 +134,11 @@ export default function App() {
         </aside>
 
         {selectedPaper ? (
-          <section className="structure-panel">
-            <header className="paper-header">
-              <div><p className="eyebrow">STRUCTURED PAPER</p><h1>{selectedPaper.title}</h1></div>
-              <a className="ghost-button" href={`/api/papers/${selectedPaper.id}/file`} target="_blank" rel="noreferrer">原始 PDF</a>
-            </header>
-            {selectedPaper.error_message && <div className="inline-warning">{selectedPaper.error_message}</div>}
-            <div className="structure-summary">
-              <span>{selectedPaper.page_count} 页</span><span>{selectedPaper.paragraph_count} 个内容块</span><span>{selectedPaper.status}</span>
-            </div>
-            <div className="paragraph-preview">
-              {selectedPaper.paragraphs.map((paragraph) => (
-                <article key={paragraph.id}>
-                  <span>PAGE {paragraph.page_number}</span>
-                  <p>{paragraph.source_text}</p>
-                </article>
-              ))}
-            </div>
-          </section>
+          <PaperReader
+            paper={selectedPaper}
+            llmConfigured={Boolean(health?.llm_configured)}
+            onPaperChange={setSelectedPaper}
+          />
         ) : (
           <section className="welcome-panel">
             <div className="welcome-copy">

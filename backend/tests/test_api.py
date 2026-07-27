@@ -7,7 +7,12 @@ from app.config import Settings
 from app.main import create_app
 
 
-def build_client(tmp_path) -> TestClient:
+class FakeAIProvider:
+    def translate(self, text: str) -> str:
+        return f"译文：{text}"
+
+
+def build_client(tmp_path, ai_provider=None) -> TestClient:
     database_path = tmp_path / "test.db"
     settings = Settings(
         app_env="test",
@@ -15,7 +20,7 @@ def build_client(tmp_path) -> TestClient:
         dashscope_api_key=None,
         storage_path=tmp_path / "papers",
     )
-    return TestClient(create_app(settings))
+    return TestClient(create_app(settings, ai_provider=ai_provider))
 
 
 def test_health_reports_qwen_configuration_state(tmp_path) -> None:
@@ -99,3 +104,36 @@ def test_duplicate_pdf_is_rejected_and_delete_removes_record(tmp_path) -> None:
     paper_id = first.json()["id"]
     assert client.delete(f"/api/papers/{paper_id}").status_code == 204
     assert client.get(f"/api/papers/{paper_id}").status_code == 404
+
+
+def test_translation_is_generated_once_and_then_read_from_cache(tmp_path) -> None:
+    client = build_client(tmp_path, ai_provider=FakeAIProvider())
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    ).json()
+
+    first = client.post(f"/api/papers/{imported['id']}/translate", json={})
+    second = client.post(f"/api/papers/{imported['id']}/translate", json={})
+
+    assert first.status_code == 200
+    assert first.json()["translated_count"] > 0
+    assert all(
+        paragraph["translated_text"].startswith("译文：")
+        for paragraph in first.json()["paragraphs"]
+    )
+    assert second.json()["translated_count"] == 0
+    assert second.json()["cached_count"] == imported["paragraph_count"]
+
+
+def test_translation_without_key_reports_configuration_action(tmp_path) -> None:
+    client = build_client(tmp_path)
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    ).json()
+
+    response = client.post(f"/api/papers/{imported['id']}/translate", json={})
+
+    assert response.status_code == 503
+    assert "DASHSCOPE_API_KEY" in response.json()["detail"]

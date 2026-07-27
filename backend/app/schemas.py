@@ -45,3 +45,14 @@ class ParagraphResponse(BaseModel):
 
 class PaperDetailResponse(PaperResponse):
     paragraphs: list[ParagraphResponse]
+
+
+class TranslationRequest(BaseModel):
+    paragraph_ids: list[str] | None = None
+    force: bool = False
+
+
+class TranslationResponse(BaseModel):
+    translated_count: int
+    cached_count: int
+    paragraphs: list[ParagraphResponse]

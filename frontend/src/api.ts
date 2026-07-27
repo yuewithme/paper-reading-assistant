@@ -65,3 +65,15 @@ export function importPaper(file: File): Promise<PaperSummary> {
 export function deletePaper(id: string): Promise<void> {
   return request<void>(`/api/papers/${id}`, { method: "DELETE" });
 }
+
+export function translatePaper(
+  id: string,
+  paragraphIds?: string[],
+  force = false,
+): Promise<{ translated_count: number; cached_count: number; paragraphs: Paragraph[] }> {
+  return request(`/api/papers/${id}/translate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paragraph_ids: paragraphIds ?? null, force }),
+  });
+}
