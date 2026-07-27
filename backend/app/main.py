@@ -18,7 +18,9 @@ from .config import Settings, get_settings
 from .database import create_database, migrate_legacy_paper_table, session_dependency
 from .models import (
     Base,
+    Conversation,
     DocumentBlockRecord,
+    Message,
     Paper,
     Paragraph,
     SemanticGroup,
@@ -28,7 +30,11 @@ from .parsing import BlockType, DocumentParsingService
 from .schemas import (
     AnalysisRequest,
     AnalysisResponse,
+    ChatRequest,
+    ChatResponse,
+    ConversationResponse,
     HealthResponse,
+    MessageResponse,
     PaperCreate,
     PaperDetailResponse,
     PaperResponse,
@@ -233,6 +239,86 @@ def create_app(
         session.add_all(groups)
         session.commit()
         return groups
+
+    def serialize_message(message: Message) -> MessageResponse:
+        return MessageResponse(
+            id=message.id,
+            role=message.role,
+            content=message.content,
+            selected_text=message.selected_text,
+            source_paragraph_ids=json.loads(message.source_paragraph_ids_json),
+            citations=json.loads(message.citations_json),
+            created_at=message.created_at,
+        )
+
+    def get_or_create_conversation(paper_id: str, session: Session) -> Conversation:
+        conversation = session.scalar(
+            select(Conversation).where(Conversation.paper_id == paper_id)
+        )
+        if conversation is None:
+            conversation = Conversation(paper_id=paper_id)
+            session.add(conversation)
+            session.commit()
+            session.refresh(conversation)
+        return conversation
+
+    def serialize_conversation(
+        conversation: Conversation,
+        session: Session,
+    ) -> ConversationResponse:
+        messages = list(
+            session.scalars(
+                select(Message)
+                .where(Message.conversation_id == conversation.id)
+                .order_by(Message.created_at)
+            )
+        )
+        return ConversationResponse(
+            id=conversation.id,
+            paper_id=conversation.paper_id,
+            title=conversation.title,
+            messages=[serialize_message(message) for message in messages],
+        )
+
+    def retrieve_context(
+        paper_id: str,
+        question: str,
+        selected_text: str | None,
+        paragraph_id: str | None,
+        session: Session,
+    ) -> list[Paragraph]:
+        paragraphs = list(
+            session.scalars(
+                select(Paragraph)
+                .where(Paragraph.paper_id == paper_id)
+                .order_by(Paragraph.paragraph_index)
+            )
+        )
+        by_id = {paragraph.id: paragraph for paragraph in paragraphs}
+        selected_indexes: set[int] = set()
+        if paragraph_id and paragraph_id in by_id:
+            index = by_id[paragraph_id].paragraph_index
+            selected_indexes.update({index - 1, index, index + 1})
+
+        query_tokens = {
+            token
+            for token in re.findall(
+                r"[a-zA-Z][a-zA-Z-]{2,}|[\u4e00-\u9fff]{2,}",
+                f"{question} {selected_text or ''}".casefold(),
+            )
+            if token not in {"what", "why", "how", "this", "that", "with", "from"}
+        }
+        scored: list[tuple[int, int]] = []
+        for paragraph in paragraphs:
+            searchable = f"{paragraph.source_text} {paragraph.translated_text or ''}".casefold()
+            score = sum(1 for token in query_tokens if token in searchable)
+            if score:
+                scored.append((score, paragraph.paragraph_index))
+        selected_indexes.update(index for _, index in sorted(scored, reverse=True)[:4])
+        valid_indexes = {index for index in selected_indexes if 0 <= index < len(paragraphs)}
+        if not valid_indexes:
+            valid_indexes = set(range(min(3, len(paragraphs))))
+        return [paragraphs[index] for index in sorted(valid_indexes)][:8]
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -530,6 +616,100 @@ def create_app(
         if paper is not None:
             paper.vocabulary_count = max(0, paper.vocabulary_count - 1)
         session.commit()
+
+    @app.get(
+        "/api/papers/{paper_id}/conversation",
+        response_model=ConversationResponse,
+    )
+    def get_conversation(
+        paper_id: str,
+        session: SessionDependency,
+    ) -> ConversationResponse:
+        get_paper_or_404(paper_id, session)
+        conversation = get_or_create_conversation(paper_id, session)
+        return serialize_conversation(conversation, session)
+
+    @app.post(
+        "/api/papers/{paper_id}/chat",
+        response_model=ChatResponse,
+    )
+    def chat_with_paper(
+        paper_id: str,
+        payload: ChatRequest,
+        session: SessionDependency,
+    ) -> ChatResponse:
+        get_paper_or_404(paper_id, session)
+        conversation = get_or_create_conversation(paper_id, session)
+        context_paragraphs = retrieve_context(
+            paper_id,
+            payload.question,
+            payload.selected_text,
+            payload.paragraph_id,
+            session,
+        )
+        existing_messages = list(
+            session.scalars(
+                select(Message)
+                .where(Message.conversation_id == conversation.id)
+                .order_by(Message.created_at)
+            )
+        )
+        history = [
+            {"role": message.role, "content": message.content}
+            for message in existing_messages[-10:]
+            if message.role in {"user", "assistant"}
+        ]
+        context = "\n\n".join(
+            (
+                f"[段落 {paragraph.paragraph_index + 1}｜第 {paragraph.page_number} 页]\n"
+                f"{paragraph.source_text}"
+            )
+            for paragraph in context_paragraphs
+        )
+        if payload.selected_text:
+            context = f"[用户选中文本]\n{payload.selected_text}\n\n{context}"
+        try:
+            answer_text = app.state.ai_provider.answer(
+                payload.question,
+                context[:20000],
+                history,
+            )
+        except AIConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"AI 问答失败：{exc}") from exc
+
+        paragraph_ids = [paragraph.id for paragraph in context_paragraphs]
+        citations = [
+            {
+                "paragraph_id": paragraph.id,
+                "page_number": paragraph.page_number,
+                "quote": paragraph.source_text[:220],
+            }
+            for paragraph in context_paragraphs[:4]
+        ]
+        user_message = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content=payload.question,
+            selected_text=payload.selected_text,
+            source_paragraph_ids_json=json.dumps(paragraph_ids),
+        )
+        assistant_message = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=answer_text,
+            source_paragraph_ids_json=json.dumps(paragraph_ids),
+            citations_json=json.dumps(citations, ensure_ascii=False),
+        )
+        session.add_all([user_message, assistant_message])
+        session.commit()
+        session.refresh(assistant_message)
+        conversation_payload = serialize_conversation(conversation, session)
+        return ChatResponse(
+            conversation=conversation_payload,
+            answer=serialize_message(assistant_message),
+        )
 
     @app.get("/api/papers/{paper_id}/file")
     def get_paper_file(paper_id: str, session: SessionDependency) -> FileResponse:

@@ -14,6 +14,14 @@ class FakeAIProvider:
     def analyze(self, text: str) -> str:
         return f"深度解读：{text}"
 
+    def answer(
+        self,
+        question: str,
+        context: str,
+        history: list[dict[str, str]],
+    ) -> str:
+        return f"回答：{question}（上下文 {len(context)} 字，历史 {len(history)} 条）"
+
 
 def build_client(tmp_path, ai_provider=None) -> TestClient:
     database_path = tmp_path / "test.db"
@@ -196,3 +204,36 @@ def test_vocabulary_is_only_created_by_explicit_request_and_persists_context(tmp
     )
     assert updated.json()["mastery_status"] == "learning"
     assert client.delete(f"/api/vocabulary/{item['id']}").status_code == 204
+
+
+def test_chat_automatically_builds_context_persists_history_and_citations(tmp_path) -> None:
+    client = build_client(tmp_path, ai_provider=FakeAIProvider())
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    ).json()
+    detail = client.get(f"/api/papers/{imported['id']}").json()
+    paragraph = detail["paragraphs"][-1]
+
+    first = client.post(
+        f"/api/papers/{imported['id']}/chat",
+        json={
+            "question": "作者为什么提出这个工作流？",
+            "selected_text": "structured workflow",
+            "paragraph_id": paragraph["id"],
+        },
+    )
+    follow_up = client.post(
+        f"/api/papers/{imported['id']}/chat",
+        json={"question": "它的主要输入是什么？"},
+    )
+    conversation = client.get(
+        f"/api/papers/{imported['id']}/conversation"
+    ).json()
+
+    assert first.status_code == 200
+    assert first.json()["answer"]["citations"]
+    assert first.json()["answer"]["citations"][0]["page_number"] == 1
+    assert follow_up.status_code == 200
+    assert len(conversation["messages"]) == 4
+    assert conversation["messages"][0]["selected_text"] == "structured workflow"

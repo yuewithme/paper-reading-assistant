@@ -105,3 +105,37 @@ class VocabularyResponse(BaseModel):
     note: str
     color: str
     created_at: datetime
+
+
+class CitationResponse(BaseModel):
+    paragraph_id: str
+    page_number: int
+    quote: str
+
+
+class MessageResponse(BaseModel):
+    id: str
+    role: str
+    content: str
+    selected_text: str | None
+    source_paragraph_ids: list[str]
+    citations: list[CitationResponse]
+    created_at: datetime
+
+
+class ConversationResponse(BaseModel):
+    id: str
+    paper_id: str
+    title: str
+    messages: list[MessageResponse]
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=8000)
+    selected_text: str | None = Field(default=None, max_length=8000)
+    paragraph_id: str | None = None
+
+
+class ChatResponse(BaseModel):
+    conversation: ConversationResponse
+    answer: MessageResponse
