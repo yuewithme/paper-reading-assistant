@@ -118,7 +118,7 @@ npm run build --prefix frontend
 - 前端 Nginx 只对外开放一个端口；
 - 后端固定单进程，避免重复加载 Paddle 模型；
 - SQLite、论文文件和 Paddle 模型缓存均持久化；
-- Nginx Basic Auth 防止匿名访问；
+- 网页和业务 API 不设置额外登录门禁，Qwen API Key 仅保存在后端；
 - 容器带健康检查和自动重启。
 
 服务器建议使用 Ubuntu 22.04/24.04、x86_64、至少 4 核 8GB；默认大型
@@ -128,21 +128,18 @@ PP-StructureV3 在 8GB 主机上可能使用交换空间，推荐 16GB 以上内
 git clone https://github.com/yuewithme/paper-reading-assistant.git
 cd paper-reading-assistant
 cp deploy/cloud.env.example .env.cloud
-mkdir -p deploy/secrets data
+mkdir -p data
 
 # 编辑 .env.cloud，填写服务器地址和 DASHSCOPE_API_KEY。
-# 生成个人访问密码：
-printf "reader:$(openssl passwd -apr1 '替换成强密码')\n" \
-  > deploy/secrets/.htpasswd
-chmod 644 deploy/secrets/.htpasswd
 
 docker compose --env-file .env.cloud -f compose.cloud.yml up -d --build
 docker compose --env-file .env.cloud -f compose.cloud.yml ps
 ```
 
 默认访问地址为 `http://服务器IP:28473`。安全组只需放行配置的
-`PAPER_READER_PORT`，不要开放后端 8000 端口。正式长期使用应在前面接入域名和
-HTTPS；没有域名时可先通过受限安全组或 SSH 隧道验收。
+`PAPER_READER_PORT`，不要开放后端 8000 端口。网页和业务 API 默认允许直接访问；
+DashScope API Key 只用于后端向 Qwen 发起请求，不会返回给浏览器。若以后需要保护
+论文内容或防止他人调用服务，可再接入应用登录、访问令牌或 HTTPS。
 
 备份：
 
