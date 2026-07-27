@@ -39,8 +39,6 @@ services:
       dockerfile: frontend/Dockerfile
     ports:
       - "${PAPER_READER_PORT:-28473}:80"
-    volumes:
-      - ./deploy/secrets/.htpasswd:/etc/nginx/auth/.htpasswd:ro
     depends_on:
       backend:
         condition: service_healthy
