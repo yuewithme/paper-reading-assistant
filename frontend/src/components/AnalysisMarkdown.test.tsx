@@ -69,3 +69,20 @@ test("compiles inline and display LaTeX with common delimiters", () => {
     container.querySelector(".katex-display .katex-html")?.textContent,
   ).toContain("Attention");
 });
+
+test("repairs common PaddleOCR brace damage and safely falls back", () => {
+  const { container } = render(
+    <AnalysisMarkdown
+      text={
+        "向量 $\\mathbf{z\\}=\\:\\bar{(z_{1},...,z_{n})}$，" +
+        "维度 $d_{k}=d_{v}=d_{\\operatorname{model}}/h\\stackrel{-{\\ }{{=6}}}}$。" +
+        "无法恢复的公式 $\\begin{matrix}$。"
+      }
+      vocabulary={[]}
+    />,
+  );
+
+  expect(container.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
+  expect(container.querySelector(".katex-error")).not.toBeInTheDocument();
+  expect(screen.getByText("\\begin{matrix}")).toBeInTheDocument();
+});

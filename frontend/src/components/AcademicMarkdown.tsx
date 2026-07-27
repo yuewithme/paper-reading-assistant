@@ -1,4 +1,5 @@
 import { Children, type ReactNode } from "react";
+import katex from "katex";
 import rehypeKatex from "rehype-katex";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -25,10 +26,78 @@ function normalizeMathDelimiters(text: string): string {
   const normalized = text
     .replace(/\\\[([\s\S]*?)\\\]/g, (_match, formula: string) => `$$${formula}$$`)
     .replace(/\\\(([\s\S]*?)\\\)/g, (_match, formula: string) => `$${formula}$`);
-  return normalized.replace(
+  const withDisplayMath = normalized.replace(
     /\$\$([\s\S]*?)\$\$/g,
-    (_match, formula: string) => `\n\n$$\n${formula.trim()}\n$$\n\n`,
+    (_match, formula: string) => {
+      const repaired = repairLatex(formula.trim());
+      return repaired === null
+        ? `\n\n\`${formula.trim()}\`\n\n`
+        : `\n\n$$\n${repaired}\n$$\n\n`;
+    },
   );
+  return withDisplayMath.replace(
+    /(?<!\$)\$(?!\$)([^\n$]+)(?<!\$)\$(?!\$)/g,
+    (_match, formula: string) => {
+      const repaired = repairLatex(formula.trim());
+      return repaired === null ? `\`${formula.trim()}\`` : `$${repaired}$`;
+    },
+  );
+}
+
+function repairLatex(formula: string): string | null {
+  if (canRenderLatex(formula)) {
+    return formula;
+  }
+
+  const normalizedClosures = formula.replace(/\\}/g, "}");
+  if (canRenderLatex(normalizedClosures)) {
+    return normalizedClosures;
+  }
+
+  const balanced = balanceLatexBraces(normalizedClosures);
+  if (canRenderLatex(balanced)) {
+    return balanced;
+  }
+
+  const withoutMalformedStackrel = balanced.replace(/\\stackrel[\s\S]*$/, "");
+  return withoutMalformedStackrel !== balanced &&
+    canRenderLatex(withoutMalformedStackrel)
+    ? withoutMalformedStackrel
+    : null;
+}
+
+function canRenderLatex(formula: string): boolean {
+  try {
+    katex.renderToString(formula, {
+      strict: false,
+      throwOnError: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function balanceLatexBraces(formula: string): string {
+  let depth = 0;
+  let repaired = "";
+
+  for (let index = 0; index < formula.length; index += 1) {
+    const character = formula[index];
+    const escaped = index > 0 && formula[index - 1] === "\\";
+
+    if (character === "{" && !escaped) {
+      depth += 1;
+    } else if (character === "}" && !escaped) {
+      if (depth === 0) {
+        continue;
+      }
+      depth -= 1;
+    }
+    repaired += character;
+  }
+
+  return repaired + "}".repeat(depth);
 }
 
 export function AcademicMarkdown({
