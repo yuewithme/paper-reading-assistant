@@ -21,6 +21,7 @@ export type PaperSummary = {
   file_name: string;
   status: string;
   page_count: number;
+  pages_processed: number;
   paragraph_count: number;
   vocabulary_count: number;
   read_progress: number;
@@ -126,7 +127,12 @@ export function deletePaper(id: string): Promise<void> {
 export async function waitForPaper(id: string, attempts = 1800): Promise<PaperDetail> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const paper = await fetchPaper(id);
-    if (!["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)) return paper;
+    if (
+      paper.paragraph_count > 0
+      || !["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)
+    ) {
+      return paper;
+    }
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
   throw new Error("解析仍在后台进行，请稍后重新打开论文");

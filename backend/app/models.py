@@ -24,6 +24,7 @@ class Paper(Base):
     file_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     file_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     page_count: Mapped[int] = mapped_column(Integer, default=0)
+    pages_processed: Mapped[int] = mapped_column(Integer, default=0)
     paragraph_count: Mapped[int] = mapped_column(Integer, default=0)
     vocabulary_count: Mapped[int] = mapped_column(Integer, default=0)
     read_progress: Mapped[float] = mapped_column(Float, default=0)

@@ -1,3 +1,4 @@
+import sqlite3
 from io import BytesIO
 from threading import Lock
 from time import sleep
@@ -90,10 +91,61 @@ class FakeDocumentParser:
         )
 
 
+class ProgressiveDocumentParser:
+    def __init__(self, database_path) -> None:
+        self.database_path = database_path
+        self.first_page_snapshot: tuple[int, int, str] | None = None
+
+    def parse_pages(self, _pdf_path, force_ocr: bool = False):
+        del force_ocr
+        yield ParsedDocument(
+            title="Progressive Academic Reading",
+            page_count=2,
+            blocks=[
+                DocumentBlock(
+                    page_number=1,
+                    block_type=BlockType.TITLE,
+                    reading_order=0,
+                    text="Progressive Academic Reading",
+                    bbox=BoundingBox(x0=72, y0=80, x1=520, y1=110),
+                    confidence=0.99,
+                    parser="paddleocr-ppstructurev3",
+                )
+            ],
+            parser="paddleocr-ppstructurev3",
+            used_ocr=True,
+        )
+        with sqlite3.connect(self.database_path) as connection:
+            self.first_page_snapshot = connection.execute(
+                "SELECT pages_processed, paragraph_count, status FROM papers"
+            ).fetchone()
+        yield ParsedDocument(
+            title="",
+            page_count=2,
+            blocks=[
+                DocumentBlock(
+                    page_number=2,
+                    block_type=BlockType.PARAGRAPH,
+                    reading_order=0,
+                    text="The second page is committed after the first page is readable.",
+                    bbox=BoundingBox(x0=72, y0=80, x1=520, y1=150),
+                    confidence=0.99,
+                    parser="paddleocr-ppstructurev3",
+                )
+            ],
+            parser="paddleocr-ppstructurev3",
+            used_ocr=True,
+        )
+
+
 DEFAULT_FAKE_AI = object()
 
 
-def build_client(tmp_path, ai_provider=DEFAULT_FAKE_AI) -> TestClient:
+def build_client(
+    tmp_path,
+    ai_provider=DEFAULT_FAKE_AI,
+    document_parser=None,
+) -> TestClient:
     database_path = tmp_path / "test.db"
     settings = Settings(
         app_env="test",
@@ -106,7 +158,7 @@ def build_client(tmp_path, ai_provider=DEFAULT_FAKE_AI) -> TestClient:
         create_app(
             settings,
             ai_provider=provider,
-            document_parser=FakeDocumentParser(),
+            document_parser=document_parser or FakeDocumentParser(),
         )
     )
 
@@ -168,6 +220,7 @@ def test_pdf_import_persists_file_and_paragraphs(tmp_path) -> None:
     paper = response.json()
     assert paper["status"] == "ready"
     assert paper["page_count"] == 1
+    assert paper["pages_processed"] == 1
     assert paper["paragraph_count"] > 0
     assert paper["translations_completed"] == paper["paragraph_count"]
     assert paper["analysis_group_count"] > 0
@@ -184,6 +237,24 @@ def test_pdf_import_persists_file_and_paragraphs(tmp_path) -> None:
     assert detail["paragraphs"]
     assert detail["paragraphs"][0]["page_number"] == 1
     assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
+
+
+def test_pdf_pages_are_committed_before_ocr_finishes(tmp_path) -> None:
+    parser = ProgressiveDocumentParser(tmp_path / "test.db")
+    client = build_client(tmp_path, document_parser=parser)
+
+    response = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    )
+
+    assert response.status_code == 201
+    assert parser.first_page_snapshot == (1, 1, "processing")
+    paper = response.json()
+    assert paper["pages_processed"] == 2
+    assert paper["page_count"] == 2
+    assert paper["paragraph_count"] == 2
+    assert paper["status"] == "ready"
 
 
 def test_duplicate_pdf_is_rejected_and_delete_removes_record(tmp_path) -> None:

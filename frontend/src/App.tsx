@@ -17,6 +17,7 @@ import { PaperReader } from "./components/PaperReader";
 import "./styles.css";
 
 type LoadState = "loading" | "ready" | "offline";
+const ACTIVE_PAPER_STATUSES = ["queued", "processing", "ocr_complete", "enriching"];
 
 export default function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -27,6 +28,7 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const hasActivePaper = papers.some((paper) => ACTIVE_PAPER_STATUSES.includes(paper.status));
 
   const refreshPapers = async () => setPapers(await fetchPapers());
 
@@ -44,6 +46,14 @@ export default function App() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasActivePaper) return;
+    const timer = window.setInterval(() => {
+      void fetchPapers().then(setPapers).catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [hasActivePaper]);
 
   const handleImport = async (file: File | undefined) => {
     if (!file) return;
@@ -67,7 +77,7 @@ export default function App() {
     setBusy(true);
     try {
       setSelectedPaper(
-        ["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)
+        ACTIVE_PAPER_STATUSES.includes(paper.status)
           ? await waitForPaper(paper.id)
           : await fetchPaper(paper.id),
       );
@@ -150,8 +160,10 @@ export default function App() {
                   <span>
                     <strong>{paper.title}</strong>
                     <small>
-                      {["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)
-                        ? paper.status === "enriching" ? "自动生成译文与解读中…" : "PaddleOCR 识别中…"
+                      {ACTIVE_PAPER_STATUSES.includes(paper.status)
+                        ? paper.status === "enriching"
+                          ? `自动生成中 · ${paper.translations_completed}/${paper.paragraph_count} 段 · ${paper.analysis_groups_completed}/${paper.analysis_group_count || "?"} 组`
+                          : `PaddleOCR · ${paper.pages_processed}/${paper.page_count || "?"} 页`
                         : `${paper.page_count} 页 · ${paper.paragraph_count} 段 · ${Math.round(paper.read_progress * 100)}%`}
                     </small>
                   </span>

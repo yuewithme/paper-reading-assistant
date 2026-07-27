@@ -24,6 +24,7 @@ class PaperResponse(BaseModel):
     file_name: str
     status: str
     page_count: int = 0
+    pages_processed: int = 0
     paragraph_count: int = 0
     vocabulary_count: int = 0
     read_progress: float = 0

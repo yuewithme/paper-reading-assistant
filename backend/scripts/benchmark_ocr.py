@@ -26,22 +26,29 @@ def main() -> None:
         use_region_detection=settings.ocr_use_region_detection,
     )
     started = perf_counter()
-    document = document_parser.parse(args.pdf)
+    pages = []
+    first_page_seconds = None
+    for page in document_parser.parse_pages(args.pdf):
+        pages.append(page)
+        if first_page_seconds is None:
+            first_page_seconds = round(perf_counter() - started, 3)
+    blocks = [block for page in pages for block in page.blocks]
     print(
         json.dumps(
             {
                 "seconds": round(perf_counter() - started, 3),
-                "pages": document.page_count,
-                "blocks": len(document.blocks),
-                "title": document.title,
-                "parser": document.parser,
+                "first_page_seconds": first_page_seconds,
+                "pages": max(page.page_count for page in pages),
+                "blocks": len(blocks),
+                "title": next((page.title for page in pages if page.title), args.pdf.stem),
+                "parser": document_parser.name,
                 "preview": [
                     {
                         "page": block.page_number,
                         "type": block.block_type.value,
                         "text": block.text[:240],
                     }
-                    for block in document.blocks[:12]
+                    for block in blocks[:12]
                 ],
             },
             ensure_ascii=False,
