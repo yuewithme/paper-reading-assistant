@@ -3,6 +3,7 @@ FROM python:3.12-slim-bookworm
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
+    UV_CONCURRENT_DOWNLOADS=4 \
     UV_LINK_MODE=copy \
     UV_DEFAULT_INDEX="https://mirrors.cloud.tencent.com/pypi/simple" \
     PIP_INDEX_URL="https://mirrors.cloud.tencent.com/pypi/simple" \
@@ -25,7 +26,16 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock /app/backend/
 COPY backend/app /app/backend/app
 
-RUN uv sync --project /app/backend --frozen --no-dev
+RUN uv export \
+        --project /app/backend \
+        --frozen \
+        --no-dev \
+        --no-emit-project \
+        --format requirements.txt \
+        --output-file /tmp/requirements.txt \
+    && uv pip install --system --require-hashes --requirements /tmp/requirements.txt \
+    && uv pip install --system --no-deps /app/backend \
+    && rm -f /tmp/requirements.txt
 
 EXPOSE 8000
 
