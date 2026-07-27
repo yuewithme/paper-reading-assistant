@@ -105,7 +105,7 @@ npm run build --prefix frontend
 
 默认使用阿里云百炼北京地域的 OpenAI 兼容接口。模型可在 `.env` 中分别配置：
 
-- `QWEN_TRANSLATION_MODEL`：逐段翻译，默认使用面向学术论文的 `qwen-mt-plus`；
+- `QWEN_TRANSLATION_MODEL`：逐段翻译，默认使用质量与吞吐平衡更好的 `qwen-mt-flash`；
 - `QWEN_ANALYSIS_MODEL`：深度解读；
 - `QWEN_CHAT_MODEL`：论文问答。
 

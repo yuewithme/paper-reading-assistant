@@ -1,3 +1,5 @@
+import threading
+import time
 from typing import Protocol
 
 from openai import OpenAI
@@ -7,6 +9,24 @@ from .config import Settings
 
 class AIConfigurationError(RuntimeError):
     pass
+
+
+class RequestStartLimiter:
+    """Space request starts evenly so a shared provider stays below its RPM quota."""
+
+    def __init__(self, requests_per_minute: int) -> None:
+        self._interval = 60 / max(1, requests_per_minute)
+        self._next_start = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_start - now
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_start = max(now, self._next_start) + self._interval
 
 
 class AIProvider(Protocol):
@@ -33,7 +53,9 @@ class QwenProvider:
             self._client = OpenAI(
                 api_key=settings.dashscope_api_key.get_secret_value(),
                 base_url=settings.qwen_base_url,
+                max_retries=settings.qwen_max_retries,
             )
+        self._translation_limiter = RequestStartLimiter(settings.qwen_translation_rpm)
 
     def _require_client(self) -> OpenAI:
         if self._client is None:
@@ -41,6 +63,7 @@ class QwenProvider:
         return self._client
 
     def translate(self, text: str) -> str:
+        self._translation_limiter.wait()
         if self.settings.qwen_translation_model.startswith("qwen-mt-"):
             response = self._require_client().chat.completions.create(
                 model=self.settings.qwen_translation_model,
@@ -82,6 +105,7 @@ class QwenProvider:
         response = self._require_client().chat.completions.create(
             model=self.settings.qwen_analysis_model,
             temperature=0.2,
+            extra_body={"enable_thinking": False},
             messages=[
                 {
                     "role": "system",

@@ -23,9 +23,13 @@ class Settings(BaseSettings):
 
     dashscope_api_key: SecretStr | None = None
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwen_translation_model: str = "qwen-mt-plus"
+    qwen_translation_model: str = "qwen-mt-flash"
     qwen_analysis_model: str = "qwen3.7-max"
     qwen_chat_model: str = "qwen3.7-max"
+    qwen_translation_workers: int = 3
+    qwen_analysis_workers: int = 3
+    qwen_translation_rpm: int = 55
+    qwen_max_retries: int = 5
 
     ocr_device: str = "cpu"
     paddle_pdx_model_source: str = "BOS"

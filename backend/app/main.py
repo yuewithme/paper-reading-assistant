@@ -4,6 +4,7 @@ import logging
 import re
 import shutil
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -71,6 +72,9 @@ READABLE_BLOCK_TYPES = {
     BlockType.REFERENCE,
 }
 VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
+ANALYSIS_PROMPT_VERSION = "analysis-v2"
+SEMANTIC_GROUP_MAX_PARAGRAPHS = 4
+SEMANTIC_GROUP_MAX_CHARS = 6000
 logger = logging.getLogger(__name__)
 
 
@@ -284,14 +288,25 @@ def create_app(
         if existing:
             paper = get_paper_or_404(paper_id, session)
             ready_count = sum(group.analysis_status == "ready" for group in existing)
-            if (
-                paper.analysis_group_count != len(existing)
-                or paper.analysis_groups_completed != ready_count
-            ):
-                paper.analysis_group_count = len(existing)
-                paper.analysis_groups_completed = ready_count
-                session.commit()
-            return existing
+            uses_current_grouping = all(
+                group.prompt_version == ANALYSIS_PROMPT_VERSION for group in existing
+            )
+            if not uses_current_grouping and ready_count == 0:
+                session.execute(
+                    delete(SemanticGroup).where(SemanticGroup.paper_id == paper_id)
+                )
+                paper.analysis_group_count = 0
+                paper.analysis_groups_completed = 0
+                session.flush()
+            else:
+                if (
+                    paper.analysis_group_count != len(existing)
+                    or paper.analysis_groups_completed != ready_count
+                ):
+                    paper.analysis_group_count = len(existing)
+                    paper.analysis_groups_completed = ready_count
+                    session.commit()
+                return existing
         paragraphs = list(
             session.scalars(
                 select(Paragraph)
@@ -308,6 +323,7 @@ def create_app(
         }
         batches: list[list[str]] = []
         current: list[str] = []
+        current_chars = 0
         for paragraph in paragraphs:
             is_heading = block_types.get(paragraph.block_id) in {
                 BlockType.TITLE.value,
@@ -316,10 +332,16 @@ def create_app(
             if is_heading and current:
                 batches.append(current)
                 current = []
+                current_chars = 0
             current.append(paragraph.id)
-            if is_heading or len(current) >= 3:
+            current_chars += len(paragraph.source_text)
+            if not is_heading and (
+                len(current) >= SEMANTIC_GROUP_MAX_PARAGRAPHS
+                or current_chars >= SEMANTIC_GROUP_MAX_CHARS
+            ):
                 batches.append(current)
                 current = []
+                current_chars = 0
         if current:
             batches.append(current)
         groups = [
@@ -327,6 +349,7 @@ def create_app(
                 paper_id=paper_id,
                 group_index=index,
                 paragraph_ids_json=json.dumps(paragraph_ids),
+                prompt_version=ANALYSIS_PROMPT_VERSION,
             )
             for index, paragraph_ids in enumerate(batches)
         ]
@@ -366,24 +389,52 @@ def create_app(
         session.commit()
         translated_count = 0
         cached_count = 0
+        pending: list[tuple[Paragraph, bool]] = []
         for paragraph in paragraphs:
             if paragraph.translated_text and not force:
                 cached_count += 1
                 continue
-            was_translated = paragraph.translated_text is not None
-            call_started = perf_counter()
-            paragraph.translated_text = app.state.ai_provider.translate(paragraph.source_text)
-            translated_count += 1
-            if not was_translated:
-                paper.translations_completed += 1
-            session.commit()
-            logger.info(
-                "pipeline.translation.item paper_id=%s completed=%d total=%d seconds=%.3f",
-                paper_id,
-                paper.translations_completed,
-                paper.paragraph_count,
-                perf_counter() - call_started,
-            )
+            pending.append((paragraph, paragraph.translated_text is not None))
+        first_error: Exception | None = None
+        worker_count = min(max(1, active_settings.qwen_translation_workers), len(pending))
+        if pending:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="qwen-translation",
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        app.state.ai_provider.translate,
+                        paragraph.source_text,
+                    ): (paragraph, was_translated, perf_counter())
+                    for paragraph, was_translated in pending
+                }
+                for future in as_completed(futures):
+                    paragraph, was_translated, call_started = futures[future]
+                    try:
+                        paragraph.translated_text = future.result()
+                    except Exception as exc:
+                        first_error = first_error or exc
+                        logger.exception(
+                            "pipeline.translation.item_failed paper_id=%s paragraph_id=%s",
+                            paper_id,
+                            paragraph.id,
+                        )
+                        continue
+                    translated_count += 1
+                    if not was_translated:
+                        paper.translations_completed += 1
+                    session.commit()
+                    logger.info(
+                        "pipeline.translation.item paper_id=%s completed=%d "
+                        "total=%d seconds=%.3f",
+                        paper_id,
+                        paper.translations_completed,
+                        paper.paragraph_count,
+                        perf_counter() - call_started,
+                    )
+        if first_error is not None:
+            raise first_error
         return translated_count, cached_count, paragraphs
 
     def analyze_groups(
@@ -405,6 +456,7 @@ def create_app(
         generated_count = 0
         cached_count = 0
         paper = get_paper_or_404(paper_id, session)
+        pending: list[tuple[SemanticGroup, str, bool]] = []
         for group in groups:
             if group.analysis_text and not force:
                 cached_count += 1
@@ -417,21 +469,52 @@ def create_app(
                 if paragraph_id in paragraphs
             )
             group.analysis_status = "processing"
-            session.commit()
-            call_started = perf_counter()
-            group.analysis_text = app.state.ai_provider.analyze(source)
-            group.analysis_status = "ready"
-            generated_count += 1
-            if not was_ready:
-                paper.analysis_groups_completed += 1
-            session.commit()
-            logger.info(
-                "pipeline.analysis.item paper_id=%s completed=%d total=%d seconds=%.3f",
-                paper_id,
-                paper.analysis_groups_completed,
-                paper.analysis_group_count,
-                perf_counter() - call_started,
-            )
+            pending.append((group, source, was_ready))
+        session.commit()
+        first_error: Exception | None = None
+        worker_count = min(max(1, active_settings.qwen_analysis_workers), len(pending))
+        if pending:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="qwen-analysis",
+            ) as executor:
+                futures = {
+                    executor.submit(app.state.ai_provider.analyze, source): (
+                        group,
+                        was_ready,
+                        perf_counter(),
+                    )
+                    for group, source, was_ready in pending
+                }
+                for future in as_completed(futures):
+                    group, was_ready, call_started = futures[future]
+                    try:
+                        group.analysis_text = future.result()
+                    except Exception as exc:
+                        first_error = first_error or exc
+                        group.analysis_status = "failed"
+                        session.commit()
+                        logger.exception(
+                            "pipeline.analysis.item_failed paper_id=%s group_id=%s",
+                            paper_id,
+                            group.id,
+                        )
+                        continue
+                    group.analysis_status = "ready"
+                    generated_count += 1
+                    if not was_ready:
+                        paper.analysis_groups_completed += 1
+                    session.commit()
+                    logger.info(
+                        "pipeline.analysis.item paper_id=%s completed=%d "
+                        "total=%d seconds=%.3f",
+                        paper_id,
+                        paper.analysis_groups_completed,
+                        paper.analysis_group_count,
+                        perf_counter() - call_started,
+                    )
+        if first_error is not None:
+            raise first_error
         return generated_count, cached_count, groups
 
     def enrich_paper(paper_id: str, session: Session) -> None:
