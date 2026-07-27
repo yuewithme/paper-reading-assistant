@@ -24,7 +24,6 @@ RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.
 WORKDIR /app
 
 COPY backend/pyproject.toml backend/uv.lock /app/backend/
-COPY backend/app /app/backend/app
 
 RUN uv export \
         --project /app/backend \
@@ -34,8 +33,10 @@ RUN uv export \
         --format requirements.txt \
         --output-file /tmp/requirements.txt \
     && uv pip install --system --require-hashes --requirements /tmp/requirements.txt \
-    && uv pip install --system --no-deps /app/backend \
     && rm -f /tmp/requirements.txt
+
+COPY backend/app /app/backend/app
+RUN uv pip install --system --no-deps /app/backend
 
 EXPOSE 8000
 
