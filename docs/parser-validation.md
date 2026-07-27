@@ -1,18 +1,14 @@
 # 解析引擎验证
 
 应用内部只依赖 `ParsedDocument` 和 `DocumentBlock`，不会直接依赖某个 OCR
-供应方的返回结构。默认流程如下：
-
-1. 使用 pypdf 读取原生 PDF 文本层。
-2. 按页判断有效字符数量。
-3. 文本层充足时使用原生结果，避免不必要的 OCR。
-4. 文本层不足时切换到 PaddleOCR PP-StructureV3。
-5. PaddleOCR 未安装时返回明确警告，论文仍会被保存为可重试状态。
+供应方的返回结构。无论 PDF 是否带文本层，默认都统一使用 PaddleOCR
+PP-StructureV3，避免不同来源的论文产生两套版面行为。PDF 会逐页渲染，每页结果
+立即提交数据库；第一页完成后即可进入阅读页。
 
 ## 本地安装 PaddleOCR
 
 ```powershell
-uv sync --project backend --extra ocr
+uv sync --project backend --python 3.12
 ```
 
 PP-StructureV3 首次运行会下载模型，因此模型缓存不会提交到 Git。
@@ -23,7 +19,7 @@ PP-StructureV3 首次运行会下载模型，因此模型缓存不会提交到 G
 
 | 样本 | 重点 |
 | --- | --- |
-| 原生文本论文 | 文本层优先、段落完整 |
+| 原生文本论文 | Paddle 结果段落完整 |
 | 双栏论文 | 阅读顺序不跨栏 |
 | 扫描论文 | 自动进入 PaddleOCR |
 | 公式密集论文 | 公式与正文分开 |
