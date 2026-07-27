@@ -939,6 +939,7 @@ version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "ftfy" },
     { name = "openai" },
     { name = "paddleocr", extra = ["doc-parser"] },
     { name = "paddlepaddle" },
@@ -960,6 +961,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
+    { name = "ftfy", specifier = ">=6,<7" },
     { name = "openai", specifier = ">=2,<3" },
     { name = "paddleocr", extras = ["doc-parser"], specifier = ">=3.7,<4" },
     { name = "paddlepaddle", specifier = "==3.2.2" },

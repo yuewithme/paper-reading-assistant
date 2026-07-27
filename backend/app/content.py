@@ -1,5 +1,7 @@
 import re
 
+from ftfy import fix_text
+
 from .parsing import BlockType
 
 _LEGAL_NOTICE_PATTERNS = (
@@ -33,6 +35,8 @@ _TAIL_HEADINGS = {
 
 def clean_extracted_text(text: str) -> str:
     """Normalize OCR whitespace and a few safe academic heading artifacts."""
+    text = fix_text(text, normalization="NFC")
+    text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
     protected: list[str] = []
 
     def protect(match: re.Match[str]) -> str:
