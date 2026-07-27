@@ -33,10 +33,27 @@ _TAIL_HEADINGS = {
 
 def clean_extracted_text(text: str) -> str:
     """Normalize OCR whitespace and a few safe academic heading artifacts."""
-    cleaned = text.replace("\u00ad", "").replace("\u00a0", " ")
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"PROTECTEDTOKEN{len(protected) - 1}PLACEHOLDER"
+
+    cleaned = re.sub(
+        r"https?://\S+|www\.\S+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b",
+        protect,
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = cleaned.replace("\u00ad", "").replace("\u00a0", " ")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"(?<!\bi)(?<!\be)(?<=[a-z])\.(?=[a-z])", " ", cleaned)
+    cleaned = re.sub(r"(?<=[A-Za-z])([,;:!?])(?=[A-Za-z])", r"\1 ", cleaned)
+    cleaned = re.sub(r"(?<=[a-z])\.(?=[A-Z])", ". ", cleaned)
     cleaned = re.sub(r"^(\d+(?:\.\d+)*)([A-Z][A-Za-z])", r"\1 \2", cleaned)
+    for index, original in enumerate(protected):
+        cleaned = cleaned.replace(f"PROTECTEDTOKEN{index}PLACEHOLDER", original)
     return cleaned
 
 

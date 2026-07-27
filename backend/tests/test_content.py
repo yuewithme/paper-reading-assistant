@@ -9,8 +9,13 @@ from app.parsing import BlockType
 
 
 def test_academic_text_cleaning_normalizes_safe_ocr_artifacts() -> None:
-    assert clean_extracted_text("1Introduction\n  A result ; and evidence.") == (
-        "1 Introduction A result; and evidence."
+    assert clean_extracted_text(
+        "1Introduction\n  Attention.mechanism improves tasks,our evidence ; agrees."
+    ) == (
+        "1 Introduction Attention mechanism improves tasks, our evidence; agrees."
+    )
+    assert clean_extracted_text("Contact alice@example.com or https://example.com/a.b") == (
+        "Contact alice@example.com or https://example.com/a.b"
     )
 
 
