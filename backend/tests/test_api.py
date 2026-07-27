@@ -160,3 +160,39 @@ def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
     assert all(group["analysis_text"].startswith("深度解读：") for group in first.json()["groups"])
     assert second.json()["generated_count"] == 0
     assert second.json()["cached_count"] == len(groups.json())
+
+
+def test_vocabulary_is_only_created_by_explicit_request_and_persists_context(tmp_path) -> None:
+    client = build_client(tmp_path, ai_provider=FakeAIProvider())
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    ).json()
+    detail = client.get(f"/api/papers/{imported['id']}").json()
+
+    assert client.get(f"/api/papers/{imported['id']}/vocabulary").json() == []
+    paragraph = detail["paragraphs"][-1]
+    created = client.post(
+        f"/api/papers/{imported['id']}/vocabulary",
+        json={"selected_text": "workflows", "paragraph_id": paragraph["id"]},
+    )
+
+    assert created.status_code == 201
+    item = created.json()
+    assert item["normalized_text"] == "workflow"
+    assert item["source_sentence"] == paragraph["source_text"]
+    assert item["page_number"] == 1
+    assert item["contextual_translation"].startswith("译文：")
+
+    duplicate = client.post(
+        f"/api/papers/{imported['id']}/vocabulary",
+        json={"selected_text": "workflow", "paragraph_id": paragraph["id"]},
+    )
+    assert duplicate.json()["id"] == item["id"]
+
+    updated = client.patch(
+        f"/api/vocabulary/{item['id']}",
+        json={"mastery_status": "learning", "note": "重点方法词"},
+    )
+    assert updated.json()["mastery_status"] == "learning"
+    assert client.delete(f"/api/vocabulary/{item['id']}").status_code == 204

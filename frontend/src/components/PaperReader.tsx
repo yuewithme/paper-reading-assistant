@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useState } from "react";
 
 import {
+  createVocabulary,
   fetchSemanticGroups,
+  fetchVocabulary,
   generateAnalysis,
   translatePaper,
   type PaperDetail,
   type Paragraph,
   type SemanticGroup,
+  type VocabularyItem,
 } from "../api";
+import { HighlightedText } from "./HighlightedText";
+import { VocabularyDrawer } from "./VocabularyDrawer";
 
 type PaperReaderProps = {
   paper: PaperDetail;
@@ -24,6 +29,14 @@ export function PaperReader({
   const [busyTask, setBusyTask] = useState<"translation" | "analysis" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [hoveredGroup, setHoveredGroup] = useState<string | null>(null);
+  const [vocabulary, setVocabulary] = useState<VocabularyItem[]>([]);
+  const [vocabularyOpen, setVocabularyOpen] = useState(false);
+  const [selection, setSelection] = useState<{
+    text: string;
+    paragraphId: string | null;
+    x: number;
+    y: number;
+  } | null>(null);
   const translated = useMemo(
     () => paper.paragraphs.filter((paragraph) => paragraph.translated_text).length,
     [paper.paragraphs],
@@ -35,13 +48,50 @@ export function PaperReader({
 
   useEffect(() => {
     let active = true;
-    fetchSemanticGroups(paper.id)
-      .then((result) => active && setGroups(result))
+    Promise.all([fetchSemanticGroups(paper.id), fetchVocabulary(paper.id)])
+      .then(([groupResult, vocabularyResult]) => {
+        if (!active) return;
+        setGroups(groupResult);
+        setVocabulary(vocabularyResult);
+      })
       .catch((error) => active && setNotice(error instanceof Error ? error.message : "分组失败"));
     return () => {
       active = false;
     };
   }, [paper.id]);
+
+  useEffect(() => {
+    const close = () => setSelection(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, []);
+
+  const openSelectionMenu = (event: MouseEvent<HTMLElement>) => {
+    const text = window.getSelection()?.toString().trim().slice(0, 500);
+    if (!text) return;
+    event.preventDefault();
+    const element = event.target as HTMLElement;
+    const paragraphId = element.closest<HTMLElement>("[data-paragraph-id]")?.dataset.paragraphId ?? null;
+    setSelection({ text, paragraphId, x: event.clientX, y: event.clientY });
+  };
+
+  const saveSelection = async () => {
+    if (!selection) return;
+    setBusyTask("translation");
+    try {
+      const item = await createVocabulary(paper.id, selection.text, selection.paragraphId);
+      setVocabulary((current) =>
+        current.some((candidate) => candidate.id === item.id) ? current : [item, ...current],
+      );
+      setVocabularyOpen(true);
+      setNotice(`已收藏“${item.display_text}”`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "收藏失败");
+    } finally {
+      setBusyTask(null);
+      setSelection(null);
+    }
+  };
 
   const generateTranslations = async () => {
     setBusyTask("translation");
@@ -92,6 +142,9 @@ export function PaperReader({
           <button className="ghost-button action-button" onClick={() => void generateTranslations()} disabled={busyTask !== null}>
             {busyTask === "translation" ? "翻译中…" : translated ? "补全译文" : "生成翻译"}
           </button>
+          <button className="ghost-button action-button" onClick={() => setVocabularyOpen(true)}>
+            词汇 {vocabulary.length}
+          </button>
           <button className="primary-button" onClick={() => void generateDeepAnalysis()} disabled={busyTask !== null}>
             {busyTask === "analysis" ? "解读中…" : "生成深度解读"}
           </button>
@@ -100,7 +153,7 @@ export function PaperReader({
       {!llmConfigured && <div className="inline-warning reader-warning">请在 `.env` 填写 DASHSCOPE_API_KEY，翻译和深度解读结果会自动缓存。</div>}
       {notice && <div className="reader-notice">{notice}</div>}
 
-      <div className="aligned-reader-grid">
+      <div className="aligned-reader-grid" onContextMenu={openSelectionMenu}>
         <div className="column-label column-label--left">原文 + 中文翻译</div>
         <div className="column-divider" />
         <div className="column-label column-label--right">深度 AI 解读</div>
@@ -117,18 +170,24 @@ export function PaperReader({
                 onMouseLeave={() => setHoveredGroup(null)}
               >
                 {paragraphs.map((paragraph) => (
-                  <BilingualParagraph key={paragraph.id} paperId={paper.id} paragraph={paragraph} />
+                  <BilingualParagraph
+                    key={paragraph.id}
+                    paperId={paper.id}
+                    paragraph={paragraph}
+                    vocabulary={vocabulary}
+                  />
                 ))}
               </section>
               <div className="column-divider" />
               <aside
+                data-paragraph-id={group.paragraph_ids[0]}
                 className={`semantic-analysis ${active ? "is-linked" : ""}`}
                 onMouseEnter={() => setHoveredGroup(group.id)}
                 onMouseLeave={() => setHoveredGroup(null)}
               >
                 <span className="group-number">GROUP {group.group_index + 1}</span>
                 {group.analysis_text ? (
-                  <p>{group.analysis_text}</p>
+                  <p><HighlightedText text={group.analysis_text} vocabulary={vocabulary} /></p>
                 ) : (
                   <p className="analysis-empty">等待生成深度解读。一个解读可对应左侧多个自然段。</p>
                 )}
@@ -137,22 +196,56 @@ export function PaperReader({
           );
         })}
       </div>
+      {selection && (
+        <div
+          className="selection-menu"
+          style={{ left: selection.x, top: selection.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <span>“{selection.text.slice(0, 40)}{selection.text.length > 40 ? "…" : ""}”</span>
+          <button onClick={() => void saveSelection()}>翻译并收藏词汇</button>
+          <button disabled title="AI 问答将在阶段 5 开放">问 AI</button>
+        </div>
+      )}
+      <VocabularyDrawer
+        items={vocabulary}
+        open={vocabularyOpen}
+        onClose={() => setVocabularyOpen(false)}
+        onChange={setVocabulary}
+      />
     </section>
   );
 }
 
-function BilingualParagraph({ paperId, paragraph }: { paperId: string; paragraph: Paragraph }) {
+function BilingualParagraph({
+  paperId,
+  paragraph,
+  vocabulary,
+}: {
+  paperId: string;
+  paragraph: Paragraph;
+  vocabulary: VocabularyItem[];
+}) {
   return (
-    <article className="bilingual-paragraph" id={`paragraph-${paragraph.id}`}>
+    <article
+      className="bilingual-paragraph"
+      data-paragraph-id={paragraph.id}
+      id={`paragraph-${paragraph.id}`}
+    >
       <div className="paragraph-location">
         <a href={`/api/papers/${paperId}/file#page=${paragraph.page_number}`} target="_blank" rel="noreferrer">
           PAGE {paragraph.page_number}
         </a>
         <span>¶ {paragraph.paragraph_index + 1}</span>
       </div>
-      <p className="source-text">{paragraph.source_text}</p>
+      <p className="source-text">
+        <HighlightedText text={paragraph.source_text} vocabulary={vocabulary} />
+      </p>
       <p className={`translated-text ${paragraph.translated_text ? "" : "is-empty"}`}>
-        {paragraph.translated_text ?? "等待生成中文翻译"}
+        <HighlightedText
+          text={paragraph.translated_text ?? "等待生成中文翻译"}
+          vocabulary={vocabulary}
+        />
       </p>
     </article>
   );

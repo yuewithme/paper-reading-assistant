@@ -100,3 +100,33 @@ class SemanticGroup(Base):
     analysis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     analysis_status: Mapped[str] = mapped_column(String(40), default="pending")
     prompt_version: Mapped[str] = mapped_column(String(40), default="analysis-v1")
+
+
+class VocabularyItem(Base):
+    __tablename__ = "vocabulary_items"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    paper_id: Mapped[str] = mapped_column(
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+    )
+    paragraph_id: Mapped[str | None] = mapped_column(
+        ForeignKey("paragraphs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    normalized_text: Mapped[str] = mapped_column(String(500), index=True)
+    display_text: Mapped[str] = mapped_column(String(500))
+    contextual_translation: Mapped[str] = mapped_column(Text)
+    source_sentence: Mapped[str] = mapped_column(Text)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mastery_status: Mapped[str] = mapped_column(String(30), default="new")
+    note: Mapped[str] = mapped_column(Text, default="")
+    color: Mapped[str] = mapped_column(String(20), default="#f2d675")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+    )
