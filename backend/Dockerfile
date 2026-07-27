@@ -6,7 +6,8 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     PATH="/app/backend/.venv/bin:${PATH}"
 
-RUN apt-get update \
+RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::http::Timeout=30 update \
     && apt-get install --yes --no-install-recommends \
         libgl1 \
         libglib2.0-0 \
@@ -27,4 +28,3 @@ RUN uv sync --project /app/backend --frozen --no-dev
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips=*"]
-
