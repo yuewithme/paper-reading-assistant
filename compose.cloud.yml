@@ -1,0 +1,50 @@
+name: paper-reading-assistant
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - ${PAPER_READER_ENV_FILE:-.env.cloud}
+    environment:
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
+      DATABASE_URL: sqlite:////app/data/paper_reader.db
+      STORAGE_PATH: /app/data/papers
+    volumes:
+      - ./data:/app/data
+      - paddle-models:/root/.paddlex
+    shm_size: 2gb
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 7g
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "${PAPER_READER_PORT:-18083}:80"
+    volumes:
+      - ./deploy/secrets/.htpasswd:/etc/nginx/auth/.htpasswd:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  paddle-models:

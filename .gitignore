@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+deploy/secrets/
 
 # Python
 __pycache__/
@@ -35,4 +36,3 @@ models/
 .vscode/
 .DS_Store
 Thumbs.db
-

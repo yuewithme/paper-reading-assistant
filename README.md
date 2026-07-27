@@ -110,3 +110,41 @@ npm run build --prefix frontend
 - `QWEN_CHAT_MODEL`：论文问答。
 
 修改 `.env` 后需要重启后端。应用不会把 API Key 返回给前端。
+
+## 云服务器部署
+
+仓库提供单机 Docker Compose 部署，适合个人使用：
+
+- 前端 Nginx 只对外开放一个端口；
+- 后端固定单进程，避免重复加载 Paddle 模型；
+- SQLite、论文文件和 Paddle 模型缓存均持久化；
+- Nginx Basic Auth 防止匿名访问；
+- 容器带健康检查和自动重启。
+
+服务器建议使用 Ubuntu 22.04/24.04、x86_64、至少 4 核 8GB；默认大型
+PP-StructureV3 在 8GB 主机上可能使用交换空间，推荐 16GB 以上内存。
+
+```bash
+git clone https://github.com/yuewithme/paper-reading-assistant.git
+cd paper-reading-assistant
+cp deploy/cloud.env.example .env.cloud
+mkdir -p deploy/secrets data
+
+# 编辑 .env.cloud，填写服务器地址和 DASHSCOPE_API_KEY。
+# 生成个人访问密码：
+printf "reader:$(openssl passwd -apr1 '替换成强密码')\n" \
+  > deploy/secrets/.htpasswd
+
+docker compose --env-file .env.cloud -f compose.cloud.yml up -d --build
+docker compose --env-file .env.cloud -f compose.cloud.yml ps
+```
+
+默认访问地址为 `http://服务器IP:18083`。安全组只需放行配置的
+`PAPER_READER_PORT`，不要开放后端 8000 端口。正式长期使用应在前面接入域名和
+HTTPS；没有域名时可先通过受限安全组或 SSH 隧道验收。
+
+备份：
+
+```bash
+sh deploy/backup.sh
+```
