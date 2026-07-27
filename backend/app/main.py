@@ -79,7 +79,7 @@ READABLE_BLOCK_TYPES = {
     BlockType.REFERENCE,
 }
 VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
-ANALYSIS_PROMPT_VERSION = "analysis-v3"
+ANALYSIS_PROMPT_VERSION = "analysis-v4"
 SEMANTIC_GROUP_MAX_PARAGRAPHS = 4
 SEMANTIC_GROUP_MAX_CHARS = 6000
 logger = logging.getLogger(__name__)

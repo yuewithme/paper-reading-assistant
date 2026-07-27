@@ -91,6 +91,9 @@ def is_tail_heading(text: str) -> bool:
 
 
 def is_substantive_analysis(texts: list[str]) -> bool:
-    combined = " ".join(clean_extracted_text(text) for text in texts)
+    cleaned_texts = [clean_extracted_text(text) for text in texts if text.strip()]
+    combined = " ".join(cleaned_texts)
     word_count = len(re.findall(r"\b[\w'-]+\b", combined))
+    if len(cleaned_texts) == 1 and (len(combined) < 500 or word_count < 75):
+        return False
     return len(combined) >= 220 and word_count >= 35
