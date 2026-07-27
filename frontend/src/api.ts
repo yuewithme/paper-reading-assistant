@@ -41,6 +41,21 @@ export type SemanticGroup = {
   analysis_status: string;
 };
 
+export type VocabularyItem = {
+  id: string;
+  paper_id: string;
+  paragraph_id: string | null;
+  normalized_text: string;
+  display_text: string;
+  contextual_translation: string;
+  source_sentence: string;
+  page_number: number | null;
+  mastery_status: "new" | "learning" | "mastered";
+  note: string;
+  color: string;
+  created_at: string;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
@@ -100,4 +115,35 @@ export function generateAnalysis(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ group_ids: groupIds ?? null, force }),
   });
+}
+
+export function fetchVocabulary(id: string): Promise<VocabularyItem[]> {
+  return request<VocabularyItem[]>(`/api/papers/${id}/vocabulary`);
+}
+
+export function createVocabulary(
+  paperId: string,
+  selectedText: string,
+  paragraphId: string | null,
+): Promise<VocabularyItem> {
+  return request<VocabularyItem>(`/api/papers/${paperId}/vocabulary`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ selected_text: selectedText, paragraph_id: paragraphId }),
+  });
+}
+
+export function updateVocabulary(
+  itemId: string,
+  updates: Partial<Pick<VocabularyItem, "contextual_translation" | "mastery_status" | "note" | "color">>,
+): Promise<VocabularyItem> {
+  return request<VocabularyItem>(`/api/vocabulary/${itemId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+}
+
+export function deleteVocabulary(itemId: string): Promise<void> {
+  return request<void>(`/api/vocabulary/${itemId}`, { method: "DELETE" });
 }

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 import shutil
 from collections.abc import Generator
 from pathlib import Path
@@ -15,7 +16,14 @@ from sqlalchemy.orm import Session
 from .ai import AIConfigurationError, AIProvider, QwenProvider
 from .config import Settings, get_settings
 from .database import create_database, migrate_legacy_paper_table, session_dependency
-from .models import Base, DocumentBlockRecord, Paper, Paragraph, SemanticGroup
+from .models import (
+    Base,
+    DocumentBlockRecord,
+    Paper,
+    Paragraph,
+    SemanticGroup,
+    VocabularyItem,
+)
 from .parsing import BlockType, DocumentParsingService
 from .schemas import (
     AnalysisRequest,
@@ -27,6 +35,9 @@ from .schemas import (
     SemanticGroupResponse,
     TranslationRequest,
     TranslationResponse,
+    VocabularyCreate,
+    VocabularyResponse,
+    VocabularyUpdate,
 )
 
 READABLE_BLOCK_TYPES = {
@@ -38,6 +49,31 @@ READABLE_BLOCK_TYPES = {
     BlockType.TABLE_CAPTION,
     BlockType.FORMULA,
 }
+VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
+
+
+def normalize_vocabulary(text: str) -> str:
+    compact = re.sub(r"\s+", " ", text.strip().casefold())
+    compact = re.sub(r"^[^\w]+|[^\w]+$", "", compact)
+    if " " in compact or len(compact) <= 3:
+        return compact
+    if compact.endswith("ies") and len(compact) > 4:
+        return f"{compact[:-3]}y"
+    if compact.endswith("ing") and len(compact) > 5:
+        stem = compact[:-3]
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            stem = stem[:-1]
+        return stem
+    if compact.endswith("ed") and len(compact) > 4:
+        stem = compact[:-2]
+        if len(stem) > 2 and stem[-1] == stem[-2]:
+            stem = stem[:-1]
+        return stem
+    if compact.endswith("es") and len(compact) > 4:
+        return compact[:-2]
+    if compact.endswith("s") and not compact.endswith("ss") and len(compact) > 3:
+        return compact[:-1]
+    return compact
 
 
 def create_app(
@@ -384,6 +420,116 @@ def create_app(
             cached_count=cached_count,
             groups=[serialize_group(group) for group in groups],
         )
+
+    @app.get(
+        "/api/papers/{paper_id}/vocabulary",
+        response_model=list[VocabularyResponse],
+    )
+    def list_vocabulary(
+        paper_id: str,
+        session: SessionDependency,
+    ) -> list[VocabularyItem]:
+        get_paper_or_404(paper_id, session)
+        return list(
+            session.scalars(
+                select(VocabularyItem)
+                .where(VocabularyItem.paper_id == paper_id)
+                .order_by(VocabularyItem.created_at.desc())
+            )
+        )
+
+    @app.post(
+        "/api/papers/{paper_id}/vocabulary",
+        response_model=VocabularyResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def create_vocabulary(
+        paper_id: str,
+        payload: VocabularyCreate,
+        session: SessionDependency,
+    ) -> VocabularyItem:
+        paper = get_paper_or_404(paper_id, session)
+        normalized = normalize_vocabulary(payload.selected_text)
+        if not normalized:
+            raise HTTPException(status_code=422, detail="没有可收藏的文本")
+        duplicate = session.scalar(
+            select(VocabularyItem).where(
+                VocabularyItem.paper_id == paper_id,
+                VocabularyItem.normalized_text == normalized,
+            )
+        )
+        if duplicate is not None:
+            return duplicate
+        paragraph = (
+            session.get(Paragraph, payload.paragraph_id)
+            if payload.paragraph_id
+            else None
+        )
+        if paragraph is not None and paragraph.paper_id != paper_id:
+            raise HTTPException(status_code=422, detail="段落不属于当前论文")
+        contextual_translation = payload.contextual_translation
+        if not contextual_translation:
+            try:
+                contextual_translation = app.state.ai_provider.translate(
+                    f"请只翻译选中的词或短语：{payload.selected_text}\n"
+                    f"论文语境：{paragraph.source_text if paragraph else ''}"
+                )
+            except AIConfigurationError:
+                contextual_translation = "待补充释义"
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"划词翻译失败：{exc}") from exc
+        # The list is intentionally small for a personal per-paper collection.
+        color_index = len(
+            list(
+                session.scalars(
+                    select(VocabularyItem).where(VocabularyItem.paper_id == paper_id)
+                )
+            )
+        )
+        item = VocabularyItem(
+            paper_id=paper_id,
+            paragraph_id=paragraph.id if paragraph else None,
+            normalized_text=normalized,
+            display_text=payload.selected_text.strip(),
+            contextual_translation=contextual_translation,
+            source_sentence=paragraph.source_text if paragraph else payload.selected_text.strip(),
+            page_number=paragraph.page_number if paragraph else None,
+            color=VOCABULARY_COLORS[color_index % len(VOCABULARY_COLORS)],
+        )
+        session.add(item)
+        paper.vocabulary_count += 1
+        session.commit()
+        session.refresh(item)
+        return item
+
+    @app.patch(
+        "/api/vocabulary/{item_id}",
+        response_model=VocabularyResponse,
+    )
+    def update_vocabulary(
+        item_id: str,
+        payload: VocabularyUpdate,
+        session: SessionDependency,
+    ) -> VocabularyItem:
+        item = session.get(VocabularyItem, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="词汇不存在")
+        for name, value in payload.model_dump(exclude_none=True).items():
+            setattr(item, name, value)
+        session.commit()
+        session.refresh(item)
+        return item
+
+    @app.delete("/api/vocabulary/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_vocabulary(item_id: str, session: SessionDependency) -> None:
+        item = session.get(VocabularyItem, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="词汇不存在")
+        paper = session.get(Paper, item.paper_id)
+        session.delete(item)
+        if paper is not None:
+            paper.vocabulary_count = max(0, paper.vocabulary_count - 1)
+        session.commit()
 
     @app.get("/api/papers/{paper_id}/file")
     def get_paper_file(paper_id: str, session: SessionDependency) -> FileResponse:

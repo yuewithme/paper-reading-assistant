@@ -75,3 +75,33 @@ class AnalysisResponse(BaseModel):
     generated_count: int
     cached_count: int
     groups: list[SemanticGroupResponse]
+
+
+class VocabularyCreate(BaseModel):
+    selected_text: str = Field(min_length=1, max_length=500)
+    paragraph_id: str | None = None
+    contextual_translation: str | None = Field(default=None, max_length=2000)
+
+
+class VocabularyUpdate(BaseModel):
+    contextual_translation: str | None = Field(default=None, max_length=2000)
+    mastery_status: str | None = Field(default=None, pattern="^(new|learning|mastered)$")
+    note: str | None = Field(default=None, max_length=4000)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+
+class VocabularyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    paper_id: str
+    paragraph_id: str | None
+    normalized_text: str
+    display_text: str
+    contextual_translation: str
+    source_sentence: str
+    page_number: int | None
+    mastery_status: str
+    note: str
+    color: str
+    created_at: datetime
