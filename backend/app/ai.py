@@ -41,21 +41,38 @@ class QwenProvider:
         return self._client
 
     def translate(self, text: str) -> str:
-        response = self._require_client().chat.completions.create(
-            model=self.settings.qwen_translation_model,
-            temperature=0.15,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是严谨的学术翻译助手。将英文论文内容翻译为准确、自然的中文。"
-                        "不要补充作者没有表达的内容；保留公式、变量、引用编号和图表编号；"
-                        "重要术语首次出现时保留英文。只输出译文。"
-                    ),
+        if self.settings.qwen_translation_model.startswith("qwen-mt-"):
+            response = self._require_client().chat.completions.create(
+                model=self.settings.qwen_translation_model,
+                messages=[{"role": "user", "content": text}],
+                extra_body={
+                    "translation_options": {
+                        "source_lang": "English",
+                        "target_lang": "Chinese",
+                        "domains": (
+                            "The text is from an academic research paper. Preserve formulas, "
+                            "variables, citation numbers, figure and table references, and "
+                            "translate technical terminology consistently in a rigorous style."
+                        ),
+                    }
                 },
-                {"role": "user", "content": text},
-            ],
-        )
+            )
+        else:
+            response = self._require_client().chat.completions.create(
+                model=self.settings.qwen_translation_model,
+                temperature=0.15,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是严谨的学术翻译助手。将英文论文内容翻译为准确、自然的中文。"
+                            "不要补充作者没有表达的内容；保留公式、变量、引用编号和图表编号；"
+                            "重要术语首次出现时保留英文。只输出译文。"
+                        ),
+                    },
+                    {"role": "user", "content": text},
+                ],
+            )
         content = response.choices[0].message.content
         if not content:
             raise RuntimeError("Qwen 没有返回译文")
