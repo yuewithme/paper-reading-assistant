@@ -56,3 +56,22 @@ class TranslationResponse(BaseModel):
     translated_count: int
     cached_count: int
     paragraphs: list[ParagraphResponse]
+
+
+class SemanticGroupResponse(BaseModel):
+    id: str
+    group_index: int
+    paragraph_ids: list[str]
+    analysis_text: str | None
+    analysis_status: str
+
+
+class AnalysisRequest(BaseModel):
+    group_ids: list[str] | None = None
+    force: bool = False
+
+
+class AnalysisResponse(BaseModel):
+    generated_count: int
+    cached_count: int
+    groups: list[SemanticGroupResponse]

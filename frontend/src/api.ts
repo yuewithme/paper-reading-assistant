@@ -33,6 +33,14 @@ export type PaperDetail = PaperSummary & {
   paragraphs: Paragraph[];
 };
 
+export type SemanticGroup = {
+  id: string;
+  group_index: number;
+  paragraph_ids: string[];
+  analysis_text: string | null;
+  analysis_status: string;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
@@ -75,5 +83,21 @@ export function translatePaper(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paragraph_ids: paragraphIds ?? null, force }),
+  });
+}
+
+export function fetchSemanticGroups(id: string): Promise<SemanticGroup[]> {
+  return request<SemanticGroup[]>(`/api/papers/${id}/groups`);
+}
+
+export function generateAnalysis(
+  id: string,
+  groupIds?: string[],
+  force = false,
+): Promise<{ generated_count: number; cached_count: number; groups: SemanticGroup[] }> {
+  return request(`/api/papers/${id}/analysis`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_ids: groupIds ?? null, force }),
   });
 }

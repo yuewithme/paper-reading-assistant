@@ -11,6 +11,9 @@ class FakeAIProvider:
     def translate(self, text: str) -> str:
         return f"译文：{text}"
 
+    def analyze(self, text: str) -> str:
+        return f"深度解读：{text}"
+
 
 def build_client(tmp_path, ai_provider=None) -> TestClient:
     database_path = tmp_path / "test.db"
@@ -137,3 +140,23 @@ def test_translation_without_key_reports_configuration_action(tmp_path) -> None:
 
     assert response.status_code == 503
     assert "DASHSCOPE_API_KEY" in response.json()["detail"]
+
+
+def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
+    client = build_client(tmp_path, ai_provider=FakeAIProvider())
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    ).json()
+
+    groups = client.get(f"/api/papers/{imported['id']}/groups")
+    first = client.post(f"/api/papers/{imported['id']}/analysis", json={})
+    second = client.post(f"/api/papers/{imported['id']}/analysis", json={})
+
+    assert groups.status_code == 200
+    assert groups.json()
+    assert all(1 <= len(group["paragraph_ids"]) <= 3 for group in groups.json())
+    assert first.json()["generated_count"] == len(groups.json())
+    assert all(group["analysis_text"].startswith("深度解读：") for group in first.json()["groups"])
+    assert second.json()["generated_count"] == 0
+    assert second.json()["cached_count"] == len(groups.json())
