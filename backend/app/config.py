@@ -6,6 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "paper_reader.db"
+DEFAULT_STORAGE_PATH = PROJECT_ROOT / "data" / "papers"
 
 
 class Settings(BaseSettings):
@@ -27,6 +28,8 @@ class Settings(BaseSettings):
     qwen_chat_model: str = "qwen3.7-max"
 
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    storage_path: Path = DEFAULT_STORAGE_PATH
+    max_pdf_size_mb: int = 100
 
     @property
     def llm_configured(self) -> bool:

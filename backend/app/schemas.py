@@ -23,5 +23,25 @@ class PaperResponse(BaseModel):
     title: str
     file_name: str
     status: str
+    page_count: int = 0
+    paragraph_count: int = 0
+    vocabulary_count: int = 0
+    read_progress: float = 0
+    error_message: str | None = None
     created_at: datetime
+    updated_at: datetime | None = None
 
+
+class ParagraphResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    paragraph_index: int
+    source_text: str
+    translated_text: str | None
+    page_number: int
+    source_bbox_json: str
+
+
+class PaperDetailResponse(PaperResponse):
+    paragraphs: list[ParagraphResponse]

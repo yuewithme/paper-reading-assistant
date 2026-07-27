@@ -1,4 +1,7 @@
+from io import BytesIO
+
 from fastapi.testclient import TestClient
+from reportlab.pdfgen.canvas import Canvas
 
 from app.config import Settings
 from app.main import create_app
@@ -10,6 +13,7 @@ def build_client(tmp_path) -> TestClient:
         app_env="test",
         database_url=f"sqlite:///{database_path.as_posix()}",
         dashscope_api_key=None,
+        storage_path=tmp_path / "papers",
     )
     return TestClient(create_app(settings))
 
@@ -22,7 +26,7 @@ def test_health_reports_qwen_configuration_state(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "service": "paper-reading-assistant-api",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "environment": "test",
         "llm_provider": "qwen",
         "llm_configured": False,
@@ -43,3 +47,55 @@ def test_paper_can_be_created_and_listed(tmp_path) -> None:
     assert len(list_response.json()) == 1
     assert list_response.json()[0]["title"] == "Attention Is All You Need"
 
+
+def make_pdf() -> bytes:
+    buffer = BytesIO()
+    canvas = Canvas(buffer)
+    canvas.drawString(72, 760, "Reliable Academic Reading")
+    canvas.drawString(72, 720, "Abstract")
+    canvas.drawString(
+        72,
+        690,
+        "This paper describes a structured workflow for understanding research.",
+    )
+    canvas.showPage()
+    canvas.save()
+    return buffer.getvalue()
+
+
+def test_pdf_import_persists_file_and_paragraphs(tmp_path) -> None:
+    client = build_client(tmp_path)
+
+    response = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    )
+
+    assert response.status_code == 201
+    paper = response.json()
+    assert paper["status"] == "ready"
+    assert paper["page_count"] == 1
+    assert paper["paragraph_count"] > 0
+
+    detail = client.get(f"/api/papers/{paper['id']}").json()
+    assert detail["paragraphs"]
+    assert detail["paragraphs"][0]["page_number"] == 1
+    assert client.get(f"/api/papers/{paper['id']}/file").status_code == 200
+
+
+def test_duplicate_pdf_is_rejected_and_delete_removes_record(tmp_path) -> None:
+    client = build_client(tmp_path)
+    pdf = make_pdf()
+    first = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", pdf, "application/pdf")},
+    )
+    duplicate = client.post(
+        "/api/papers/import",
+        files={"file": ("copy.pdf", pdf, "application/pdf")},
+    )
+
+    assert duplicate.status_code == 409
+    paper_id = first.json()["id"]
+    assert client.delete(f"/api/papers/{paper_id}").status_code == 204
+    assert client.get(f"/api/papers/{paper_id}").status_code == 404

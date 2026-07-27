@@ -1,25 +1,48 @@
+import hashlib
+import shutil
 from collections.abc import Generator
+from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from fastapi.responses import FileResponse
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .config import Settings, get_settings
-from .database import create_database, session_dependency
-from .models import Base, Paper
-from .schemas import HealthResponse, PaperCreate, PaperResponse
+from .database import create_database, migrate_legacy_paper_table, session_dependency
+from .models import Base, DocumentBlockRecord, Paper, Paragraph
+from .parsing import BlockType, DocumentParsingService
+from .schemas import (
+    HealthResponse,
+    PaperCreate,
+    PaperDetailResponse,
+    PaperResponse,
+)
+
+READABLE_BLOCK_TYPES = {
+    BlockType.TITLE,
+    BlockType.HEADING,
+    BlockType.PARAGRAPH,
+    BlockType.LIST,
+    BlockType.FIGURE_CAPTION,
+    BlockType.TABLE_CAPTION,
+    BlockType.FORMULA,
+}
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     active_settings = settings or get_settings()
     engine, session_factory = create_database(active_settings.database_url)
     Base.metadata.create_all(engine)
+    migrate_legacy_paper_table(engine)
+    active_settings.storage_path.mkdir(parents=True, exist_ok=True)
 
     app = FastAPI(
         title="论文辅助研读助手 API",
-        version="0.1.0",
+        version="0.2.0",
         description="Local-first API for bilingual paper reading and AI analysis.",
     )
     app.state.settings = active_settings
@@ -38,6 +61,67 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield from session_dependency(session_factory)
 
     SessionDependency = Annotated[Session, Depends(get_session)]
+
+    def get_paper_or_404(paper_id: str, session: Session) -> Paper:
+        paper = session.get(Paper, paper_id)
+        if paper is None:
+            raise HTTPException(status_code=404, detail="论文不存在")
+        return paper
+
+    def parse_and_store(paper: Paper, session: Session, force_ocr: bool = False) -> None:
+        if not paper.file_path:
+            raise HTTPException(status_code=409, detail="这条论文记录没有 PDF 文件")
+        paper.status = "processing"
+        paper.error_message = None
+        session.commit()
+        try:
+            parsed = DocumentParsingService().parse(Path(paper.file_path), force_ocr=force_ocr)
+            session.execute(
+                delete(Paragraph).where(Paragraph.paper_id == paper.id)
+            )
+            session.execute(
+                delete(DocumentBlockRecord).where(DocumentBlockRecord.paper_id == paper.id)
+            )
+            paragraph_index = 0
+            for block in parsed.blocks:
+                record = DocumentBlockRecord(
+                    paper_id=paper.id,
+                    page_number=block.page_number,
+                    block_type=block.block_type.value,
+                    reading_order=block.reading_order,
+                    source_text=block.text,
+                    bbox_json=block.bbox.model_dump_json(),
+                    parser=block.parser,
+                )
+                session.add(record)
+                session.flush()
+                if block.block_type in READABLE_BLOCK_TYPES:
+                    session.add(
+                        Paragraph(
+                            paper_id=paper.id,
+                            block_id=record.id,
+                            paragraph_index=paragraph_index,
+                            source_text=block.text,
+                            page_number=block.page_number,
+                            source_bbox_json=block.bbox.model_dump_json(),
+                        )
+                    )
+                    paragraph_index += 1
+            paper.title = parsed.title or paper.title
+            paper.page_count = parsed.page_count
+            paper.paragraph_count = paragraph_index
+            paper.status = "ready" if paragraph_index else "needs_ocr"
+            paper.error_message = "\n".join(parsed.warnings) or None
+            session.commit()
+            session.refresh(paper)
+        except Exception as exc:
+            session.rollback()
+            paper = session.get(Paper, paper.id)
+            if paper is not None:
+                paper.status = "failed"
+                paper.error_message = str(exc)
+                session.commit()
+            raise HTTPException(status_code=422, detail=f"PDF 解析失败：{exc}") from exc
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -64,6 +148,93 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.commit()
         session.refresh(paper)
         return paper
+
+    @app.post(
+        "/api/papers/import",
+        response_model=PaperResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def import_paper(
+        session: SessionDependency,
+        file: Annotated[UploadFile, File()],
+    ) -> Paper:
+        if not file.filename or not file.filename.casefold().endswith(".pdf"):
+            raise HTTPException(status_code=415, detail="只支持 PDF 文件")
+        content = await file.read(active_settings.max_pdf_size_mb * 1024 * 1024 + 1)
+        if len(content) > active_settings.max_pdf_size_mb * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="PDF 文件过大")
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(status_code=415, detail="文件不是有效 PDF")
+        file_hash = hashlib.sha256(content).hexdigest()
+        duplicate = session.scalar(select(Paper).where(Paper.file_hash == file_hash))
+        if duplicate is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "这篇论文已经导入", "paper_id": duplicate.id},
+            )
+
+        paper_id = str(uuid4())
+        paper_dir = active_settings.storage_path / paper_id
+        paper_dir.mkdir(parents=True, exist_ok=False)
+        pdf_path = paper_dir / "source.pdf"
+        pdf_path.write_bytes(content)
+        paper = Paper(
+            id=paper_id,
+            title=Path(file.filename).stem,
+            file_name=file.filename,
+            file_path=str(pdf_path),
+            file_hash=file_hash,
+            status="queued",
+        )
+        session.add(paper)
+        session.commit()
+        session.refresh(paper)
+        parse_and_store(paper, session)
+        return paper
+
+    @app.get("/api/papers/{paper_id}", response_model=PaperDetailResponse)
+    def get_paper(paper_id: str, session: SessionDependency) -> dict:
+        paper = get_paper_or_404(paper_id, session)
+        paragraphs = list(
+            session.scalars(
+                select(Paragraph)
+                .where(Paragraph.paper_id == paper.id)
+                .order_by(Paragraph.paragraph_index)
+            )
+        )
+        payload = PaperResponse.model_validate(paper).model_dump()
+        payload["paragraphs"] = paragraphs
+        return payload
+
+    @app.get("/api/papers/{paper_id}/file")
+    def get_paper_file(paper_id: str, session: SessionDependency) -> FileResponse:
+        paper = get_paper_or_404(paper_id, session)
+        if not paper.file_path or not Path(paper.file_path).exists():
+            raise HTTPException(status_code=404, detail="PDF 文件不存在")
+        return FileResponse(
+            paper.file_path,
+            media_type="application/pdf",
+            filename=paper.file_name,
+        )
+
+    @app.post("/api/papers/{paper_id}/reparse", response_model=PaperResponse)
+    def reparse_paper(
+        paper_id: str,
+        session: SessionDependency,
+        force_ocr: bool = False,
+    ) -> Paper:
+        paper = get_paper_or_404(paper_id, session)
+        parse_and_store(paper, session, force_ocr=force_ocr)
+        return paper
+
+    @app.delete("/api/papers/{paper_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_paper(paper_id: str, session: SessionDependency) -> None:
+        paper = get_paper_or_404(paper_id, session)
+        paper_dir = Path(paper.file_path).parent if paper.file_path else None
+        session.delete(paper)
+        session.commit()
+        if paper_dir and paper_dir.exists():
+            shutil.rmtree(paper_dir)
 
     return app
 
