@@ -43,12 +43,22 @@ def test_analysis_boundaries_identify_front_matter_tail_and_short_content() -> N
     assert is_front_matter_heading("Keywords")
     assert is_tail_heading("12 References")
     assert not is_substantive_analysis(["A short and obvious sentence."])
-    assert is_substantive_analysis(
+    assert not is_substantive_analysis(
         [
             "The proposed architecture replaces recurrent computation with self-attention, "
             "which allows every token to interact directly with every other token in a layer. "
             "This removes the sequential dependency that previously limited parallel training. "
             "The authors then evaluate both translation quality and computational efficiency "
             "to show that the architectural change improves accuracy while reducing training cost."
+        ]
+    )
+    assert is_substantive_analysis(
+        [
+            "The proposed architecture replaces recurrent computation with self-attention, "
+            "which allows every token to interact directly with every other token in a layer. "
+            "This removes the sequential dependency that previously limited parallel training.",
+            "The authors evaluate both translation quality and computational efficiency across "
+            "several benchmarks. The comparison separates the effect of the architecture from "
+            "training scale and supports the claim with both accuracy and throughput evidence.",
         ]
     )
