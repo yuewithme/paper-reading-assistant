@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   deletePaper,
+  enrichPaper,
   fetchHealth,
   fetchPaper,
   fetchPapers,
@@ -66,7 +67,7 @@ export default function App() {
     setBusy(true);
     try {
       setSelectedPaper(
-        ["queued", "processing"].includes(paper.status)
+        ["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)
           ? await waitForPaper(paper.id)
           : await fetchPaper(paper.id),
       );
@@ -80,9 +81,14 @@ export default function App() {
 
   const retryPaper = async (paper: PaperSummary, forceOcr = false) => {
     setBusy(true);
-    setNotice(forceOcr ? "正在使用 OCR 重新解析…" : "正在重新解析论文…");
+    const retryAi = ["ai_failed", "ai_configuration_required"].includes(paper.status);
+    setNotice(retryAi ? "正在继续生成翻译与深度解读…" : "正在使用 PaddleOCR 重新解析…");
     try {
-      await reparsePaper(paper.id, forceOcr);
+      if (retryAi) {
+        await enrichPaper(paper.id);
+      } else {
+        await reparsePaper(paper.id, forceOcr);
+      }
       setSelectedPaper(await waitForPaper(paper.id));
       await refreshPapers();
       setNotice(null);
@@ -144,14 +150,14 @@ export default function App() {
                   <span>
                     <strong>{paper.title}</strong>
                     <small>
-                      {["queued", "processing"].includes(paper.status)
-                        ? "后台解析中…"
+                      {["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)
+                        ? paper.status === "enriching" ? "自动生成译文与解读中…" : "PaddleOCR 识别中…"
                         : `${paper.page_count} 页 · ${paper.paragraph_count} 段 · ${Math.round(paper.read_progress * 100)}%`}
                     </small>
                   </span>
                 </button>
-                {["failed", "needs_ocr"].includes(paper.status) && (
-                  <button className="retry-button" onClick={() => void retryPaper(paper, paper.status === "needs_ocr")}>重试</button>
+                {["failed", "ai_failed", "ai_configuration_required"].includes(paper.status) && (
+                  <button className="retry-button" onClick={() => void retryPaper(paper)}>重试</button>
                 )}
                 <button className="icon-button" aria-label={`删除 ${paper.title}`} onClick={() => void removePaper(paper)}>×</button>
               </div>
@@ -208,7 +214,7 @@ export default function App() {
               <div><dt>本地 API</dt><dd>{loadState === "ready" ? "运行正常" : "未连接"}</dd></div>
               <div><dt>Qwen</dt><dd>{health?.llm_configured ? "API Key 已加载" : "等待 DASHSCOPE_API_KEY"}</dd></div>
               <div><dt>数据位置</dt><dd>项目根目录 / data</dd></div>
-              <div><dt>OCR</dt><dd>PaddleOCR PP-StructureV3（可选依赖）</dd></div>
+              <div><dt>OCR</dt><dd>PaddleOCR PP-StructureV3（所有 PDF 统一使用）</dd></div>
             </dl>
             <div className="settings-code">
               <span>在根目录创建 `.env`，填写：</span>

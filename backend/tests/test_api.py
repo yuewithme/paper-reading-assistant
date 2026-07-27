@@ -5,6 +5,7 @@ from reportlab.pdfgen.canvas import Canvas
 
 from app.config import Settings
 from app.main import create_app
+from app.parsing import BlockType, BoundingBox, DocumentBlock, ParsedDocument
 
 
 class FakeAIProvider:
@@ -23,7 +24,41 @@ class FakeAIProvider:
         return f"回答：{question}（上下文 {len(context)} 字，历史 {len(history)} 条）"
 
 
-def build_client(tmp_path, ai_provider=None) -> TestClient:
+class FakeDocumentParser:
+    def parse(self, _pdf_path, force_ocr: bool = False) -> ParsedDocument:
+        del force_ocr
+        texts = [
+            (BlockType.TITLE, "Reliable Academic Reading"),
+            (BlockType.HEADING, "Abstract"),
+            (
+                BlockType.PARAGRAPH,
+                "This paper describes a structured workflow for understanding research.",
+            ),
+        ]
+        return ParsedDocument(
+            title="Reliable Academic Reading",
+            page_count=1,
+            blocks=[
+                DocumentBlock(
+                    page_number=1,
+                    block_type=block_type,
+                    reading_order=index,
+                    text=text,
+                    bbox=BoundingBox(x0=72, y0=80 + index * 40, x1=520, y1=110 + index * 40),
+                    confidence=0.99,
+                    parser="paddleocr-ppstructurev3",
+                )
+                for index, (block_type, text) in enumerate(texts)
+            ],
+            parser="paddleocr-ppstructurev3",
+            used_ocr=True,
+        )
+
+
+DEFAULT_FAKE_AI = object()
+
+
+def build_client(tmp_path, ai_provider=DEFAULT_FAKE_AI) -> TestClient:
     database_path = tmp_path / "test.db"
     settings = Settings(
         app_env="test",
@@ -31,7 +66,14 @@ def build_client(tmp_path, ai_provider=None) -> TestClient:
         dashscope_api_key=None,
         storage_path=tmp_path / "papers",
     )
-    return TestClient(create_app(settings, ai_provider=ai_provider))
+    provider = FakeAIProvider() if ai_provider is DEFAULT_FAKE_AI else ai_provider
+    return TestClient(
+        create_app(
+            settings,
+            ai_provider=provider,
+            document_parser=FakeDocumentParser(),
+        )
+    )
 
 
 def test_health_reports_qwen_configuration_state(tmp_path) -> None:
@@ -124,21 +166,20 @@ def test_translation_is_generated_once_and_then_read_from_cache(tmp_path) -> Non
         files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
     ).json()
 
+    detail = client.get(f"/api/papers/{imported['id']}").json()
     first = client.post(f"/api/papers/{imported['id']}/translate", json={})
-    second = client.post(f"/api/papers/{imported['id']}/translate", json={})
 
-    assert first.status_code == 200
-    assert first.json()["translated_count"] > 0
     assert all(
         paragraph["translated_text"].startswith("译文：")
-        for paragraph in first.json()["paragraphs"]
+        for paragraph in detail["paragraphs"]
     )
-    assert second.json()["translated_count"] == 0
-    assert second.json()["cached_count"] == imported["paragraph_count"]
+    assert first.status_code == 200
+    assert first.json()["translated_count"] == 0
+    assert first.json()["cached_count"] == imported["paragraph_count"]
 
 
 def test_translation_without_key_reports_configuration_action(tmp_path) -> None:
-    client = build_client(tmp_path)
+    client = build_client(tmp_path, ai_provider=None)
     imported = client.post(
         "/api/papers/import",
         files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
@@ -148,6 +189,15 @@ def test_translation_without_key_reports_configuration_action(tmp_path) -> None:
 
     assert response.status_code == 503
     assert "DASHSCOPE_API_KEY" in response.json()["detail"]
+    assert imported["status"] == "ai_configuration_required"
+
+    client.app.state.ai_provider = FakeAIProvider()
+    resumed = client.post(f"/api/papers/{imported['id']}/enrich")
+    detail = client.get(f"/api/papers/{imported['id']}").json()
+
+    assert resumed.status_code == 200
+    assert detail["status"] == "ready"
+    assert all(paragraph["translated_text"] for paragraph in detail["paragraphs"])
 
 
 def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
@@ -159,15 +209,13 @@ def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
 
     groups = client.get(f"/api/papers/{imported['id']}/groups")
     first = client.post(f"/api/papers/{imported['id']}/analysis", json={})
-    second = client.post(f"/api/papers/{imported['id']}/analysis", json={})
 
     assert groups.status_code == 200
     assert groups.json()
     assert all(1 <= len(group["paragraph_ids"]) <= 3 for group in groups.json())
-    assert first.json()["generated_count"] == len(groups.json())
+    assert first.json()["generated_count"] == 0
+    assert first.json()["cached_count"] == len(groups.json())
     assert all(group["analysis_text"].startswith("深度解读：") for group in first.json()["groups"])
-    assert second.json()["generated_count"] == 0
-    assert second.json()["cached_count"] == len(groups.json())
 
 
 def test_vocabulary_is_only_created_by_explicit_request_and_persists_context(tmp_path) -> None:
@@ -251,6 +299,9 @@ def test_background_import_and_reading_progress_are_recoverable(tmp_path) -> Non
 
     assert imported.status_code == 201
     assert detail["status"] == "ready"
+    assert all(paragraph["translated_text"] for paragraph in detail["paragraphs"])
+    groups = client.get(f"/api/papers/{paper_id}/groups").json()
+    assert groups and all(group["analysis_text"] for group in groups)
     paragraph_id = detail["paragraphs"][-1]["id"]
     updated = client.patch(
         f"/api/papers/{paper_id}/progress",

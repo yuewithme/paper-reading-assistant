@@ -10,12 +10,12 @@
 
 ## 当前状态
 
-第一版阶段 0–6 已完成：
+第一版阶段 0–8 已完成：
 
-- PDF 后台导入、文件去重和原生文本层解析；
-- 扫描页的 PaddleOCR PP-StructureV3 可选解析路径；
-- 原文下方逐段中文翻译及本地结果缓存；
-- 按语义块组织的默认深度解读和左右联动；
+- PDF 后台导入、文件去重和 PaddleOCR PP-StructureV3 全量解析；
+- 无论 PDF 是否带文本层，都统一执行 OCR、版面分析和阅读顺序恢复；
+- OCR 完成后自动生成逐段中文翻译并缓存；
+- 自动生成按语义块组织的默认深度解读和左右联动；
 - 主动划词收藏、语境释义、掌握状态和全文多色高亮；
 - 选中文本右键进入 AI 问答，自动组合相邻段落和全文相关内容；
 - 论文证据定位、连续对话、阅读进度恢复和失败重试。
@@ -37,11 +37,13 @@
 
 ### 1. 配置环境变量
 
-```powershell
-Copy-Item .env.example .env
+项目根目录已经准备好被 Git 忽略的 `.env`，只需填写：
+
+```dotenv
+DASHSCOPE_API_KEY=你的百炼Key
 ```
 
-在 `.env` 中填写 `DASHSCOPE_API_KEY`。没有 Key 时也可以启动应用，只是 AI 功能不可用。
+没有 Key 时仍可完成 OCR；自动翻译和解读会暂停，填好 Key、重启后端后在论文列表点击“重试”即可继续，不会重复 OCR。
 
 ### 2. 安装后端
 
@@ -51,13 +53,11 @@ Copy-Item .env.example .env
 uv sync --project backend --python 3.12
 ```
 
-需要识别扫描 PDF 时安装 PaddleOCR 可选依赖：
+PaddleOCR 和 CPU 版 PaddlePaddle 已是必需依赖，上述命令会一起安装。第一次导入会从百度 BOS 下载 PP-StructureV3 所需模型，因此明显慢于后续导入。
 
-```powershell
-uv sync --project backend --python 3.12 --extra ocr
-```
+项目固定使用 `paddlepaddle==3.2.2`，以避开 Windows CPU 环境中 3.3.x 的 oneDNN/PIR 推理兼容问题。云服务器部署时也应以锁文件为准。
 
-PaddleOCR 第一次运行会下载模型。只阅读带文本层的 PDF 时可以不安装该可选依赖。
+当前 `.env` 默认使用 `OCR_DEVICE=cpu`。部署到带 NVIDIA GPU 的 Linux 云服务器时，需要根据服务器 CUDA 版本安装对应的 `paddlepaddle-gpu`，再将其改为 `gpu:0`。
 
 ### 3. 启动后端
 
@@ -75,6 +75,15 @@ npm run dev --prefix frontend
 ```
 
 前端地址：`http://localhost:5173`
+
+## 使用流程
+
+1. 填写 `.env` 中的 `DASHSCOPE_API_KEY` 并启动前后端。
+2. 点击“导入 PDF”。
+3. 后端依次执行 PaddleOCR、逐段翻译和语义块深度解读。
+4. 状态变为“就绪”后直接阅读；不需要再点击“生成翻译”或“生成深度解读”。
+
+PP-StructureV3 会恢复多栏阅读顺序，并识别标题、正文、表格、图片说明和公式区域，同时保留页面号与区域坐标。它能显著改善复杂版面，但 OCR 与公式识别仍可能出错，尤其是低分辨率扫描、手写内容和非常规公式排版。
 
 ## 测试
 
@@ -96,7 +105,7 @@ npm run build --prefix frontend
 
 默认使用阿里云百炼北京地域的 OpenAI 兼容接口。模型可在 `.env` 中分别配置：
 
-- `QWEN_TRANSLATION_MODEL`：逐段翻译；
+- `QWEN_TRANSLATION_MODEL`：逐段翻译，默认使用面向学术论文的 `qwen-mt-plus`；
 - `QWEN_ANALYSIS_MODEL`：深度解读；
 - `QWEN_CHAT_MODEL`：论文问答。
 

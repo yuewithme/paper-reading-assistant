@@ -23,9 +23,14 @@ class Settings(BaseSettings):
 
     dashscope_api_key: SecretStr | None = None
     qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    qwen_translation_model: str = "qwen3.7-plus"
+    qwen_translation_model: str = "qwen-mt-plus"
     qwen_analysis_model: str = "qwen3.7-max"
     qwen_chat_model: str = "qwen3.7-max"
+
+    ocr_device: str = "cpu"
+    paddle_pdx_model_source: str = "BOS"
+    auto_translate: bool = True
+    auto_analyze: bool = True
 
     database_url: str = f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     storage_path: Path = DEFAULT_STORAGE_PATH

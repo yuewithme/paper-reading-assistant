@@ -60,9 +60,12 @@ READABLE_BLOCK_TYPES = {
     BlockType.HEADING,
     BlockType.PARAGRAPH,
     BlockType.LIST,
+    BlockType.TABLE,
     BlockType.FIGURE_CAPTION,
     BlockType.TABLE_CAPTION,
     BlockType.FORMULA,
+    BlockType.FOOTNOTE,
+    BlockType.REFERENCE,
 }
 VOCABULARY_COLORS = ["#f2d675", "#9fd8c5", "#efb5c4", "#b8c7ef", "#d6b4e8", "#f0b98d"]
 
@@ -94,6 +97,7 @@ def normalize_vocabulary(text: str) -> str:
 def create_app(
     settings: Settings | None = None,
     ai_provider: AIProvider | None = None,
+    document_parser: DocumentParsingService | None = None,
 ) -> FastAPI:
     active_settings = settings or get_settings()
     engine, session_factory = create_database(active_settings.database_url)
@@ -110,6 +114,7 @@ def create_app(
     app.state.engine = engine
     app.state.session_factory = session_factory
     app.state.ai_provider = ai_provider or QwenProvider(active_settings)
+    app.state.document_parser = document_parser
 
     app.add_middleware(
         CORSMiddleware,
@@ -137,7 +142,19 @@ def create_app(
         paper.error_message = None
         session.commit()
         try:
-            parsed = DocumentParsingService().parse(Path(paper.file_path), force_ocr=force_ocr)
+            if app.state.document_parser is None:
+                from .parsing.paddle import PaddleStructureParser
+
+                app.state.document_parser = DocumentParsingService(
+                    parser=PaddleStructureParser(
+                        device=active_settings.ocr_device,
+                        model_source=active_settings.paddle_pdx_model_source,
+                    )
+                )
+            parsed = app.state.document_parser.parse(
+                Path(paper.file_path),
+                force_ocr=force_ocr,
+            )
             session.execute(
                 delete(Paragraph).where(Paragraph.paper_id == paper.id)
             )
@@ -175,7 +192,7 @@ def create_app(
             paper.title = parsed.title or paper.title
             paper.page_count = parsed.page_count
             paper.paragraph_count = paragraph_index
-            paper.status = "ready" if paragraph_index else "needs_ocr"
+            paper.status = "ocr_complete" if paragraph_index else "failed"
             paper.error_message = "\n".join(parsed.warnings) or None
             session.commit()
             session.refresh(paper)
@@ -194,9 +211,17 @@ def create_app(
             paper = session.get(Paper, paper_id)
             if paper is not None:
                 parse_and_store(paper, session, force_ocr=force_ocr)
+                enrich_paper(paper.id, session)
         except HTTPException:
             # parse_and_store has already persisted the actionable failure state.
             pass
+        finally:
+            session.close()
+
+    def process_enrichment_background(paper_id: str) -> None:
+        session = session_factory()
+        try:
+            enrich_paper(paper_id, session)
         finally:
             session.close()
 
@@ -260,6 +285,101 @@ def create_app(
         session.add_all(groups)
         session.commit()
         return groups
+
+    def translate_paragraphs(
+        paper_id: str,
+        session: Session,
+        paragraph_ids: list[str] | None = None,
+        force: bool = False,
+    ) -> tuple[int, int, list[Paragraph]]:
+        query = (
+            select(Paragraph)
+            .where(Paragraph.paper_id == paper_id)
+            .order_by(Paragraph.paragraph_index)
+        )
+        if paragraph_ids:
+            query = query.where(Paragraph.id.in_(paragraph_ids))
+        paragraphs = list(session.scalars(query))
+        translated_count = 0
+        cached_count = 0
+        for paragraph in paragraphs:
+            if paragraph.translated_text and not force:
+                cached_count += 1
+                continue
+            paragraph.translated_text = app.state.ai_provider.translate(
+                paragraph.source_text
+            )
+            translated_count += 1
+            session.commit()
+        return translated_count, cached_count, paragraphs
+
+    def analyze_groups(
+        paper_id: str,
+        session: Session,
+        group_ids: list[str] | None = None,
+        force: bool = False,
+    ) -> tuple[int, int, list[SemanticGroup]]:
+        groups = ensure_semantic_groups(paper_id, session)
+        if group_ids:
+            selected_ids = set(group_ids)
+            groups = [group for group in groups if group.id in selected_ids]
+        paragraphs = {
+            paragraph.id: paragraph
+            for paragraph in session.scalars(
+                select(Paragraph).where(Paragraph.paper_id == paper_id)
+            )
+        }
+        generated_count = 0
+        cached_count = 0
+        for group in groups:
+            if group.analysis_text and not force:
+                cached_count += 1
+                continue
+            paragraph_ids = json.loads(group.paragraph_ids_json)
+            source = "\n\n".join(
+                paragraphs[paragraph_id].source_text
+                for paragraph_id in paragraph_ids
+                if paragraph_id in paragraphs
+            )
+            group.analysis_status = "processing"
+            session.commit()
+            group.analysis_text = app.state.ai_provider.analyze(source)
+            group.analysis_status = "ready"
+            generated_count += 1
+            session.commit()
+        return generated_count, cached_count, groups
+
+    def enrich_paper(paper_id: str, session: Session) -> None:
+        paper = get_paper_or_404(paper_id, session)
+        if not active_settings.auto_translate and not active_settings.auto_analyze:
+            paper.status = "ready"
+            session.commit()
+            return
+        paper.status = "enriching"
+        paper.error_message = None
+        session.commit()
+        try:
+            if active_settings.auto_translate:
+                translate_paragraphs(paper_id, session)
+            if active_settings.auto_analyze:
+                analyze_groups(paper_id, session)
+        except AIConfigurationError as exc:
+            session.rollback()
+            paper = get_paper_or_404(paper_id, session)
+            paper.status = "ai_configuration_required"
+            paper.error_message = str(exc)
+            session.commit()
+            return
+        except Exception as exc:
+            session.rollback()
+            paper = get_paper_or_404(paper_id, session)
+            paper.status = "ai_failed"
+            paper.error_message = f"自动生成失败：{exc}"
+            session.commit()
+            return
+        paper.status = "ready"
+        paper.error_message = None
+        session.commit()
 
     def serialize_message(message: Message) -> MessageResponse:
         return MessageResponse(
@@ -413,6 +533,7 @@ def create_app(
             background_tasks.add_task(process_paper_background, paper.id)
         else:
             parse_and_store(paper, session)
+            enrich_paper(paper.id, session)
         return paper
 
     @app.get("/api/papers/{paper_id}", response_model=PaperDetailResponse)
@@ -439,26 +560,13 @@ def create_app(
         session: SessionDependency,
     ) -> TranslationResponse:
         get_paper_or_404(paper_id, session)
-        query = (
-            select(Paragraph)
-            .where(Paragraph.paper_id == paper_id)
-            .order_by(Paragraph.paragraph_index)
-        )
-        if payload.paragraph_ids:
-            query = query.where(Paragraph.id.in_(payload.paragraph_ids))
-        paragraphs = list(session.scalars(query))
-        translated_count = 0
-        cached_count = 0
         try:
-            for paragraph in paragraphs:
-                if paragraph.translated_text and not payload.force:
-                    cached_count += 1
-                    continue
-                paragraph.translated_text = app.state.ai_provider.translate(
-                    paragraph.source_text
-                )
-                translated_count += 1
-                session.commit()
+            translated_count, cached_count, paragraphs = translate_paragraphs(
+                paper_id,
+                session,
+                payload.paragraph_ids,
+                payload.force,
+            )
         except AIConfigurationError as exc:
             session.rollback()
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -470,6 +578,25 @@ def create_app(
             cached_count=cached_count,
             paragraphs=paragraphs,
         )
+
+    @app.post("/api/papers/{paper_id}/enrich", response_model=PaperResponse)
+    def enrich_paper_endpoint(
+        paper_id: str,
+        session: SessionDependency,
+        background_tasks: BackgroundTasks,
+        background: bool = False,
+    ) -> Paper:
+        paper = get_paper_or_404(paper_id, session)
+        if paper.paragraph_count == 0:
+            raise HTTPException(status_code=409, detail="论文尚未完成 OCR，不能生成 AI 内容")
+        if background:
+            paper.status = "enriching"
+            paper.error_message = None
+            session.commit()
+            background_tasks.add_task(process_enrichment_background, paper.id)
+        else:
+            enrich_paper(paper.id, session)
+        return paper
 
     @app.get(
         "/api/papers/{paper_id}/groups",
@@ -492,35 +619,13 @@ def create_app(
         session: SessionDependency,
     ) -> AnalysisResponse:
         get_paper_or_404(paper_id, session)
-        groups = ensure_semantic_groups(paper_id, session)
-        if payload.group_ids:
-            selected_ids = set(payload.group_ids)
-            groups = [group for group in groups if group.id in selected_ids]
-        paragraphs = {
-            paragraph.id: paragraph
-            for paragraph in session.scalars(
-                select(Paragraph).where(Paragraph.paper_id == paper_id)
-            )
-        }
-        generated_count = 0
-        cached_count = 0
         try:
-            for group in groups:
-                if group.analysis_text and not payload.force:
-                    cached_count += 1
-                    continue
-                paragraph_ids = json.loads(group.paragraph_ids_json)
-                source = "\n\n".join(
-                    paragraphs[paragraph_id].source_text
-                    for paragraph_id in paragraph_ids
-                    if paragraph_id in paragraphs
-                )
-                group.analysis_status = "processing"
-                session.commit()
-                group.analysis_text = app.state.ai_provider.analyze(source)
-                group.analysis_status = "ready"
-                generated_count += 1
-                session.commit()
+            generated_count, cached_count, groups = analyze_groups(
+                paper_id,
+                session,
+                payload.group_ids,
+                payload.force,
+            )
         except AIConfigurationError as exc:
             session.rollback()
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -780,6 +885,7 @@ def create_app(
             background_tasks.add_task(process_paper_background, paper.id, force_ocr)
         else:
             parse_and_store(paper, session, force_ocr=force_ocr)
+            enrich_paper(paper.id, session)
         return paper
 
     @app.delete("/api/papers/{paper_id}", status_code=status.HTTP_204_NO_CONTENT)

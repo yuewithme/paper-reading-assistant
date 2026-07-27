@@ -113,13 +113,19 @@ export function deletePaper(id: string): Promise<void> {
   return request<void>(`/api/papers/${id}`, { method: "DELETE" });
 }
 
-export async function waitForPaper(id: string, attempts = 120): Promise<PaperDetail> {
+export async function waitForPaper(id: string, attempts = 1800): Promise<PaperDetail> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const paper = await fetchPaper(id);
-    if (!["queued", "processing"].includes(paper.status)) return paper;
+    if (!["queued", "processing", "ocr_complete", "enriching"].includes(paper.status)) return paper;
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
   throw new Error("解析仍在后台进行，请稍后重新打开论文");
+}
+
+export function enrichPaper(id: string): Promise<PaperSummary> {
+  return request<PaperSummary>(`/api/papers/${id}/enrich?background=true`, {
+    method: "POST",
+  });
 }
 
 export function reparsePaper(id: string, forceOcr = false): Promise<PaperSummary> {
