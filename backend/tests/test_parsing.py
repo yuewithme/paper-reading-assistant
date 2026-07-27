@@ -82,3 +82,75 @@ def test_paddle_empty_result_is_an_actionable_failure(tmp_path) -> None:
         assert "没有识别到可阅读内容" in str(exc)
     else:
         raise AssertionError("empty OCR output should fail explicitly")
+
+
+def test_two_column_page_is_reordered_column_first(tmp_path) -> None:
+    class TwoColumnResult:
+        json = {
+            "res": {
+                "page_index": 0,
+                "page_count": 1,
+                "parsing_res_list": [
+                    {
+                        "block_bbox": [280, 50, 720, 90],
+                        "block_label": "doc_title",
+                        "block_content": "Full-width title",
+                    },
+                    {
+                        "block_bbox": [50, 120, 120, 145],
+                        "block_label": "paragraph_title",
+                        "block_content": "Abstract",
+                    },
+                    {
+                        "block_bbox": [550, 120, 650, 145],
+                        "block_label": "paragraph_title",
+                        "block_content": "2. Results",
+                    },
+                    {
+                        "block_bbox": [50, 160, 450, 260],
+                        "block_label": "text",
+                        "block_content": "Left column introduction.",
+                    },
+                    {
+                        "block_bbox": [550, 160, 950, 260],
+                        "block_label": "text",
+                        "block_content": "Right column results.",
+                    },
+                    {
+                        "block_bbox": [50, 300, 150, 325],
+                        "block_label": "paragraph_title",
+                        "block_content": "1. Method",
+                    },
+                    {
+                        "block_bbox": [50, 340, 450, 440],
+                        "block_label": "text",
+                        "block_content": "Left column method.",
+                    },
+                    {
+                        "block_bbox": [550, 300, 950, 440],
+                        "block_label": "table",
+                        "block_content": "Right column table.",
+                    },
+                ],
+            }
+        }
+
+    class TwoColumnPipeline:
+        def predict(self, input: str):
+            return [TwoColumnResult()]
+
+    pdf_path = tmp_path / "columns.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+    parsed = PaddleStructureParser(pipeline=TwoColumnPipeline()).parse(pdf_path)
+
+    assert [block.text for block in parsed.blocks] == [
+        "Full-width title",
+        "Abstract",
+        "Left column introduction.",
+        "1. Method",
+        "Left column method.",
+        "2. Results",
+        "Right column results.",
+        "Right column table.",
+    ]
+    assert [block.reading_order for block in parsed.blocks] == list(range(8))
