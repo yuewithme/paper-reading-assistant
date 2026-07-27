@@ -1,10 +1,11 @@
-import { type MouseEvent, useEffect, useMemo, useState } from "react";
+import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createVocabulary,
   fetchSemanticGroups,
   fetchVocabulary,
   generateAnalysis,
+  saveReadingProgress,
   translatePaper,
   type PaperDetail,
   type Paragraph,
@@ -43,6 +44,9 @@ export function PaperReader({
     selectedText: null,
     paragraphId: null,
   });
+  const readerRef = useRef<HTMLDivElement>(null);
+  const progressTimer = useRef<number | null>(null);
+  const restoredPosition = useRef(false);
   const translated = useMemo(
     () => paper.paragraphs.filter((paragraph) => paragraph.translated_text).length,
     [paper.paragraphs],
@@ -65,6 +69,41 @@ export function PaperReader({
       active = false;
     };
   }, [paper.id]);
+
+  useEffect(() => {
+    if (restoredPosition.current || !groups.length || !paper.last_read_position) return;
+    restoredPosition.current = true;
+    window.setTimeout(() => {
+      document.getElementById(`paragraph-${paper.last_read_position}`)?.scrollIntoView({
+        block: "center",
+      });
+    }, 0);
+  }, [groups.length, paper.last_read_position]);
+
+  useEffect(
+    () => () => {
+      if (progressTimer.current) window.clearTimeout(progressTimer.current);
+    },
+    [],
+  );
+
+  const trackReadingProgress = () => {
+    const container = readerRef.current;
+    if (!container) return;
+    const denominator = Math.max(1, container.scrollHeight - container.clientHeight);
+    const progress = Math.min(1, Math.max(0, container.scrollTop / denominator));
+    const paragraphs = Array.from(
+      container.querySelectorAll<HTMLElement>("[data-paragraph-id]"),
+    );
+    const position = [...paragraphs]
+      .reverse()
+      .find((element) => element.offsetTop <= container.scrollTop + 180)
+      ?.dataset.paragraphId ?? null;
+    if (progressTimer.current) window.clearTimeout(progressTimer.current);
+    progressTimer.current = window.setTimeout(() => {
+      void saveReadingProgress(paper.id, progress, position);
+    }, 600);
+  };
 
   useEffect(() => {
     const close = () => setSelection(null);
@@ -178,7 +217,12 @@ export function PaperReader({
       {!llmConfigured && <div className="inline-warning reader-warning">请在 `.env` 填写 DASHSCOPE_API_KEY，翻译和深度解读结果会自动缓存。</div>}
       {notice && <div className="reader-notice">{notice}</div>}
 
-      <div className="aligned-reader-grid" onContextMenu={openSelectionMenu}>
+      <div
+        ref={readerRef}
+        className="aligned-reader-grid"
+        onContextMenu={openSelectionMenu}
+        onScroll={trackReadingProgress}
+      >
         <div className="column-label column-label--left">原文 + 中文翻译</div>
         <div className="column-divider" />
         <div className="column-label column-label--right">深度 AI 解读</div>

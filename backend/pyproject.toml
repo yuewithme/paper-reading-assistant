@@ -1,6 +1,6 @@
 [project]
 name = "paper-reading-assistant-api"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local API for the paper reading assistant"
 requires-python = ">=3.12,<3.13"
 dependencies = [

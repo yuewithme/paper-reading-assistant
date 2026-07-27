@@ -42,7 +42,7 @@ def test_health_reports_qwen_configuration_state(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json() == {
         "service": "paper-reading-assistant-api",
-        "version": "0.2.0",
+        "version": "1.0.0",
         "environment": "test",
         "llm_provider": "qwen",
         "llm_configured": False,
@@ -237,3 +237,27 @@ def test_chat_automatically_builds_context_persists_history_and_citations(tmp_pa
     assert follow_up.status_code == 200
     assert len(conversation["messages"]) == 4
     assert conversation["messages"][0]["selected_text"] == "structured workflow"
+
+
+def test_background_import_and_reading_progress_are_recoverable(tmp_path) -> None:
+    client = build_client(tmp_path, ai_provider=FakeAIProvider())
+
+    imported = client.post(
+        "/api/papers/import?background=true",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    )
+    paper_id = imported.json()["id"]
+    detail = client.get(f"/api/papers/{paper_id}").json()
+
+    assert imported.status_code == 201
+    assert detail["status"] == "ready"
+    paragraph_id = detail["paragraphs"][-1]["id"]
+    updated = client.patch(
+        f"/api/papers/{paper_id}/progress",
+        json={"read_progress": 0.64, "last_read_position": paragraph_id},
+    )
+    reopened = client.get(f"/api/papers/{paper_id}").json()
+
+    assert updated.status_code == 200
+    assert reopened["read_progress"] == 0.64
+    assert reopened["last_read_position"] == paragraph_id
