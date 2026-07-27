@@ -6,7 +6,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.116,<1",
     "openai>=2,<3",
-    "pypdf>=6,<7",
+    "paddleocr[doc-parser]>=3.7,<4",
+    "paddlepaddle==3.2.2",
     "pydantic-settings>=2.10,<3",
     "python-multipart>=0.0.20,<1",
     "sqlalchemy>=2.0.40,<3",
@@ -19,11 +20,6 @@ dev = [
     "pytest>=8.4,<9",
     "reportlab>=4.4,<5",
     "ruff>=0.12,<1",
-]
-
-[project.optional-dependencies]
-ocr = [
-    "paddleocr>=3.2,<4",
 ]
 
 [tool.pytest.ini_options]
