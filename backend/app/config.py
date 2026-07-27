@@ -29,6 +29,14 @@ class Settings(BaseSettings):
 
     ocr_device: str = "cpu"
     paddle_pdx_model_source: str = "BOS"
+    ocr_cpu_threads: int = 4
+    ocr_enable_hpi: bool = False
+    ocr_layout_model: str = "PP-DocLayout-M"
+    ocr_text_detection_model: str = "PP-OCRv5_mobile_det"
+    ocr_text_recognition_model: str = "en_PP-OCRv4_mobile_rec"
+    ocr_formula_model: str = "PP-FormulaNet-S"
+    ocr_table_structure_model: str = "SLANet_plus"
+    ocr_use_region_detection: bool = False
     auto_translate: bool = True
     auto_analyze: bool = True
 

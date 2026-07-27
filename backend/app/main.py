@@ -165,6 +165,14 @@ def create_app(
                     parser=PaddleStructureParser(
                         device=active_settings.ocr_device,
                         model_source=active_settings.paddle_pdx_model_source,
+                        cpu_threads=active_settings.ocr_cpu_threads,
+                        enable_hpi=active_settings.ocr_enable_hpi,
+                        layout_model=active_settings.ocr_layout_model,
+                        text_detection_model=active_settings.ocr_text_detection_model,
+                        text_recognition_model=active_settings.ocr_text_recognition_model,
+                        formula_model=active_settings.ocr_formula_model,
+                        table_structure_model=active_settings.ocr_table_structure_model,
+                        use_region_detection=active_settings.ocr_use_region_detection,
                     )
                 )
             parsed = app.state.document_parser.parse(

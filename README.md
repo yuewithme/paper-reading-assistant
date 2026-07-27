@@ -117,6 +117,7 @@ npm run build --prefix frontend
 
 - 前端 Nginx 只对外开放一个端口；
 - 后端固定单进程，避免重复加载 Paddle 模型；
+- CPU 部署默认使用 4 线程与学术英文轻量模型组合，并保留表格和公式识别；
 - SQLite、论文文件和 Paddle 模型缓存均持久化；
 - 网页和业务 API 不设置额外登录门禁，Qwen API Key 仅保存在后端；
 - 容器带健康检查和自动重启。

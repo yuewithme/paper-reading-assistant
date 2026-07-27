@@ -1,3 +1,6 @@
+import sys
+from types import ModuleType
+
 from app.parsing import BlockType, DocumentParsingService
 from app.parsing.paddle import PaddleStructureParser
 
@@ -48,6 +51,32 @@ class FakePipeline:
         return [FakeResult()]
 
 
+def test_balanced_cpu_profile_uses_lightweight_models(monkeypatch) -> None:
+    captured: dict = {}
+
+    class FakePPStructureV3:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    fake_paddleocr = ModuleType("paddleocr")
+    fake_paddleocr.PPStructureV3 = FakePPStructureV3
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_paddleocr)
+    monkeypatch.setitem(sys.modules, "paddle", ModuleType("paddle"))
+
+    PaddleStructureParser()
+
+    assert captured["cpu_threads"] == 4
+    assert captured["enable_hpi"] is False
+    assert captured["engine"] == "paddle"
+    assert captured["layout_detection_model_name"] == "PP-DocLayout-M"
+    assert captured["text_detection_model_name"] == "PP-OCRv5_mobile_det"
+    assert captured["text_recognition_model_name"] == "en_PP-OCRv4_mobile_rec"
+    assert captured["formula_recognition_model_name"] == "PP-FormulaNet-S"
+    assert captured["wired_table_structure_recognition_model_name"] == "SLANet_plus"
+    assert captured["wireless_table_structure_recognition_model_name"] == "SLANet_plus"
+    assert captured["use_region_detection"] is False
+
+
 def test_paddle_result_is_mapped_to_stable_document_model(tmp_path) -> None:
     pdf_path = tmp_path / "paper.pdf"
     pdf_path.write_bytes(b"%PDF-1.7")
@@ -65,6 +94,43 @@ def test_paddle_result_is_mapped_to_stable_document_model(tmp_path) -> None:
     assert all(block.page_number == 1 for block in parsed.blocks)
     assert parsed.blocks[0].bbox.x1 == 570
     assert all(block.parser == "paddleocr-ppstructurev3" for block in parsed.blocks)
+
+
+def test_publication_boilerplate_is_not_selected_as_document_title(tmp_path) -> None:
+    class BoilerplateResult:
+        json = {
+            "res": {
+                "page_index": 0,
+                "page_count": 1,
+                "parsing_res_list": [
+                    {
+                        "block_bbox": [245, 142, 974, 224],
+                        "block_label": "doc_title",
+                        "block_content": (
+                            "Provided proper attribution is provided, Google hereby grants "
+                            "permission to reproduce the tables and figures in this paper "
+                            "solely for use in journalistic or scholarly works."
+                        ),
+                    },
+                    {
+                        "block_bbox": [419, 295, 797, 325],
+                        "block_label": "doc_title",
+                        "block_content": "Attention Is All You Need",
+                    },
+                ],
+            }
+        }
+
+    class BoilerplatePipeline:
+        def predict(self, input: str):
+            return [BoilerplateResult()]
+
+    pdf_path = tmp_path / "1706.03762v7.pdf"
+    pdf_path.write_bytes(b"%PDF-1.7")
+
+    parsed = PaddleStructureParser(pipeline=BoilerplatePipeline()).parse(pdf_path)
+
+    assert parsed.title == "Attention Is All You Need"
 
 
 def test_paddle_empty_result_is_an_actionable_failure(tmp_path) -> None:

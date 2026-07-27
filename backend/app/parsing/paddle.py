@@ -1,4 +1,5 @@
 import os
+import re
 from collections.abc import Iterable
 from html.parser import HTMLParser
 from pathlib import Path
@@ -180,6 +181,39 @@ def _restore_reading_order(blocks: list[DocumentBlock]) -> list[DocumentBlock]:
     return ordered
 
 
+_TITLE_BOILERPLATE = (
+    "provided proper attribution",
+    "permission to reproduce",
+    "all rights reserved",
+    "copyright",
+    "preprint",
+    "conference",
+    "journalistic",
+    "scholarly works",
+)
+
+
+def _select_document_title(blocks: list[DocumentBlock], fallback: str) -> str:
+    """Choose a likely paper title while ignoring publication boilerplate."""
+    candidates = [
+        block.text.strip()
+        for block in blocks
+        if block.page_number == 1 and block.block_type == BlockType.TITLE
+    ]
+    for candidate in candidates:
+        normalized = re.sub(r"\s+", " ", candidate).strip()
+        lower = normalized.casefold()
+        word_count = len(normalized.split())
+        if not 3 <= word_count <= 30:
+            continue
+        if len(normalized) > 240 or "@" in normalized:
+            continue
+        if any(marker in lower for marker in _TITLE_BOILERPLATE):
+            continue
+        return normalized
+    return fallback
+
+
 class PaddleStructureParser:
     """Adapter around PP-StructureV3 with stable reading order and coordinates."""
 
@@ -190,6 +224,14 @@ class PaddleStructureParser:
         pipeline: Any | None = None,
         device: str = "cpu",
         model_source: str = "BOS",
+        cpu_threads: int = 4,
+        enable_hpi: bool = False,
+        layout_model: str = "PP-DocLayout-M",
+        text_detection_model: str = "PP-OCRv5_mobile_det",
+        text_recognition_model: str = "en_PP-OCRv4_mobile_rec",
+        formula_model: str = "PP-FormulaNet-S",
+        table_structure_model: str = "SLANet_plus",
+        use_region_detection: bool = False,
     ) -> None:
         if pipeline is not None:
             self._pipeline = pipeline
@@ -212,8 +254,19 @@ class PaddleStructureParser:
                 use_doc_orientation_classify=False,
                 use_doc_unwarping=False,
                 use_textline_orientation=False,
+                use_seal_recognition=False,
+                use_chart_recognition=False,
+                use_region_detection=use_region_detection,
+                layout_detection_model_name=layout_model,
+                text_detection_model_name=text_detection_model,
+                text_recognition_model_name=text_recognition_model,
+                formula_recognition_model_name=formula_model,
+                wired_table_structure_recognition_model_name=table_structure_model,
+                wireless_table_structure_recognition_model_name=table_structure_model,
                 device=device,
-                engine="paddle",
+                engine=None if enable_hpi else "paddle",
+                enable_hpi=enable_hpi,
+                cpu_threads=cpu_threads,
             )
         except Exception as exc:
             raise RuntimeError(f"PaddleOCR PP-StructureV3 初始化失败：{exc}") from exc
@@ -282,10 +335,7 @@ class PaddleStructureParser:
         if not blocks:
             raise RuntimeError("PaddleOCR 完成了页面处理，但没有识别到可阅读内容")
         blocks = _restore_reading_order(blocks)
-        title = next(
-            (block.text for block in blocks if block.block_type == BlockType.TITLE),
-            pdf_path.stem,
-        )
+        title = _select_document_title(blocks, pdf_path.stem)
         return ParsedDocument(
             title=title[:500],
             page_count=page_count,

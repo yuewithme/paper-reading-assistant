@@ -36,6 +36,7 @@ RUN uv export \
     && rm -f /tmp/requirements.txt
 
 COPY backend/app /app/backend/app
+COPY backend/scripts /app/backend/scripts
 RUN uv pip install --system --no-deps /app/backend
 
 EXPOSE 8000
