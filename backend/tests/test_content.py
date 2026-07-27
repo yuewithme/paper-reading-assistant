@@ -19,6 +19,11 @@ def test_academic_text_cleaning_normalizes_safe_ocr_artifacts() -> None:
     )
 
 
+def test_academic_text_cleaning_repairs_mojibake_and_invisible_unicode() -> None:
+    assert clean_extracted_text("FranÃ§ais and cafÃ©") == "Français and café"
+    assert clean_extracted_text("æ¨¡åž‹\u200b architecture") == "模型 architecture"
+
+
 def test_reader_noise_removes_boilerplate_but_keeps_abstract_content() -> None:
     assert is_reader_noise(
         BlockType.PARAGRAPH,
