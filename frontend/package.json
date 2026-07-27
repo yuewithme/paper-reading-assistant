@@ -16,7 +16,9 @@
     "pdfjs-dist": "^5.4.296",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "react-resizable-panels": "^3.0.6"
+    "react-markdown": "^10.1.0",
+    "react-resizable-panels": "^3.0.6",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.8.0",
