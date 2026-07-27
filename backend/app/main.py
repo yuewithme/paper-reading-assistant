@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from .ai import AIConfigurationError, AIProvider, QwenProvider
 from .config import Settings, get_settings
 from .database import create_database, migrate_legacy_paper_table, session_dependency
 from .models import Base, DocumentBlockRecord, Paper, Paragraph
@@ -20,6 +21,8 @@ from .schemas import (
     PaperCreate,
     PaperDetailResponse,
     PaperResponse,
+    TranslationRequest,
+    TranslationResponse,
 )
 
 READABLE_BLOCK_TYPES = {
@@ -33,7 +36,10 @@ READABLE_BLOCK_TYPES = {
 }
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    ai_provider: AIProvider | None = None,
+) -> FastAPI:
     active_settings = settings or get_settings()
     engine, session_factory = create_database(active_settings.database_url)
     Base.metadata.create_all(engine)
@@ -48,6 +54,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = active_settings
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.ai_provider = ai_provider or QwenProvider(active_settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -205,6 +212,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = PaperResponse.model_validate(paper).model_dump()
         payload["paragraphs"] = paragraphs
         return payload
+
+    @app.post(
+        "/api/papers/{paper_id}/translate",
+        response_model=TranslationResponse,
+    )
+    def translate_paper(
+        paper_id: str,
+        payload: TranslationRequest,
+        session: SessionDependency,
+    ) -> TranslationResponse:
+        get_paper_or_404(paper_id, session)
+        query = (
+            select(Paragraph)
+            .where(Paragraph.paper_id == paper_id)
+            .order_by(Paragraph.paragraph_index)
+        )
+        if payload.paragraph_ids:
+            query = query.where(Paragraph.id.in_(payload.paragraph_ids))
+        paragraphs = list(session.scalars(query))
+        translated_count = 0
+        cached_count = 0
+        try:
+            for paragraph in paragraphs:
+                if paragraph.translated_text and not payload.force:
+                    cached_count += 1
+                    continue
+                paragraph.translated_text = app.state.ai_provider.translate(
+                    paragraph.source_text
+                )
+                translated_count += 1
+                session.commit()
+        except AIConfigurationError as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=502, detail=f"翻译失败：{exc}") from exc
+        return TranslationResponse(
+            translated_count=translated_count,
+            cached_count=cached_count,
+            paragraphs=paragraphs,
+        )
 
     @app.get("/api/papers/{paper_id}/file")
     def get_paper_file(paper_id: str, session: SessionDependency) -> FileResponse:

@@ -372,6 +372,144 @@ h1 {
   box-shadow: 0 12px 34px rgba(30,40,32,.16);
 }
 
+.reader-shell {
+  min-width: 0;
+  height: calc(100vh - 83px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #f7f6f0;
+}
+
+.reader-header {
+  flex: none;
+  padding: 24px 34px 18px;
+  background: rgba(250, 249, 244, .96);
+}
+
+.reader-header h1 {
+  max-width: 680px;
+  font-size: clamp(24px, 3vw, 38px);
+}
+
+.reader-meta,
+.reader-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reader-meta {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reader-meta span + span::before {
+  content: "·";
+  margin-right: 10px;
+}
+
+.reader-panels {
+  min-height: 0;
+  flex: 1;
+}
+
+.reader-panels > [data-panel] {
+  overflow: auto;
+}
+
+.resize-handle {
+  position: relative;
+  width: 1px;
+  background: var(--line);
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: 0 -5px;
+}
+
+.resize-handle[data-resize-handle-active] {
+  background: var(--green);
+}
+
+.bilingual-stream {
+  max-width: 850px;
+  margin: 0 auto;
+  padding: 30px 46px 120px;
+}
+
+.bilingual-paragraph {
+  padding: 26px 0 30px;
+  border-bottom: 1px solid var(--line);
+}
+
+.paragraph-location {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+  color: var(--olive);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.paragraph-location a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.source-text {
+  margin: 0;
+  color: #242b26;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  line-height: 1.75;
+}
+
+.translated-text {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  border-left: 2px solid #c5b45a;
+  color: #5b5e57;
+  font-size: 15px;
+  line-height: 1.9;
+}
+
+.translated-text.is-empty {
+  color: #a3a49d;
+  font-style: italic;
+}
+
+.analysis-placeholder {
+  min-height: 100%;
+  padding: 38px 34px;
+  background: #edf1ea;
+}
+
+.analysis-placeholder strong {
+  display: block;
+  margin: 28px 0 10px;
+  font-family: var(--serif);
+  font-size: 23px;
+}
+
+.analysis-placeholder > p:last-child {
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.reader-notice {
+  flex: none;
+  padding: 9px 34px;
+  border-bottom: 1px solid var(--line);
+  color: var(--green);
+  background: #f2f7f1;
+  font-size: 12px;
+}
+
 .paper-file-badge {
   padding: 5px;
   border-radius: 5px;
