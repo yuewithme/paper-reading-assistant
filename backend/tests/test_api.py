@@ -1,4 +1,6 @@
 from io import BytesIO
+from threading import Lock
+from time import sleep
 
 from fastapi.testclient import TestClient
 from reportlab.pdfgen.canvas import Canvas
@@ -22,6 +24,39 @@ class FakeAIProvider:
         history: list[dict[str, str]],
     ) -> str:
         return f"回答：{question}（上下文 {len(context)} 字，历史 {len(history)} 条）"
+
+
+class ConcurrencyTrackingProvider(FakeAIProvider):
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._translation_active = 0
+        self._analysis_active = 0
+        self.max_translation_active = 0
+        self.max_analysis_active = 0
+
+    def translate(self, text: str) -> str:
+        with self._lock:
+            self._translation_active += 1
+            self.max_translation_active = max(
+                self.max_translation_active,
+                self._translation_active,
+            )
+        sleep(0.03)
+        with self._lock:
+            self._translation_active -= 1
+        return super().translate(text)
+
+    def analyze(self, text: str) -> str:
+        with self._lock:
+            self._analysis_active += 1
+            self.max_analysis_active = max(
+                self.max_analysis_active,
+                self._analysis_active,
+            )
+        sleep(0.03)
+        with self._lock:
+            self._analysis_active -= 1
+        return super().analyze(text)
 
 
 class FakeDocumentParser:
@@ -222,10 +257,26 @@ def test_semantic_groups_and_deep_analysis_are_cached(tmp_path) -> None:
 
     assert groups.status_code == 200
     assert groups.json()
-    assert all(1 <= len(group["paragraph_ids"]) <= 3 for group in groups.json())
+    assert all(1 <= len(group["paragraph_ids"]) <= 4 for group in groups.json())
+    assert any(len(group["paragraph_ids"]) > 1 for group in groups.json())
     assert first.json()["generated_count"] == 0
     assert first.json()["cached_count"] == len(groups.json())
     assert all(group["analysis_text"].startswith("深度解读：") for group in first.json()["groups"])
+
+
+def test_translation_and_analysis_use_bounded_concurrency(tmp_path) -> None:
+    provider = ConcurrencyTrackingProvider()
+    client = build_client(tmp_path, ai_provider=provider)
+
+    imported = client.post(
+        "/api/papers/import",
+        files={"file": ("paper.pdf", make_pdf(), "application/pdf")},
+    )
+
+    assert imported.status_code == 201
+    assert imported.json()["status"] == "ready"
+    assert 1 < provider.max_translation_active <= 3
+    assert 1 < provider.max_analysis_active <= 3
 
 
 def test_vocabulary_is_only_created_by_explicit_request_and_persists_context(tmp_path) -> None:
