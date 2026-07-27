@@ -1,4 +1,5 @@
 import hashlib
+import json
 import shutil
 from collections.abc import Generator
 from pathlib import Path
@@ -14,13 +15,16 @@ from sqlalchemy.orm import Session
 from .ai import AIConfigurationError, AIProvider, QwenProvider
 from .config import Settings, get_settings
 from .database import create_database, migrate_legacy_paper_table, session_dependency
-from .models import Base, DocumentBlockRecord, Paper, Paragraph
+from .models import Base, DocumentBlockRecord, Paper, Paragraph, SemanticGroup
 from .parsing import BlockType, DocumentParsingService
 from .schemas import (
+    AnalysisRequest,
+    AnalysisResponse,
     HealthResponse,
     PaperCreate,
     PaperDetailResponse,
     PaperResponse,
+    SemanticGroupResponse,
     TranslationRequest,
     TranslationResponse,
 )
@@ -89,6 +93,9 @@ def create_app(
             session.execute(
                 delete(DocumentBlockRecord).where(DocumentBlockRecord.paper_id == paper.id)
             )
+            session.execute(
+                delete(SemanticGroup).where(SemanticGroup.paper_id == paper.id)
+            )
             paragraph_index = 0
             for block in parsed.blocks:
                 record = DocumentBlockRecord(
@@ -129,6 +136,67 @@ def create_app(
                 paper.error_message = str(exc)
                 session.commit()
             raise HTTPException(status_code=422, detail=f"PDF 解析失败：{exc}") from exc
+
+    def serialize_group(group: SemanticGroup) -> SemanticGroupResponse:
+        return SemanticGroupResponse(
+            id=group.id,
+            group_index=group.group_index,
+            paragraph_ids=json.loads(group.paragraph_ids_json),
+            analysis_text=group.analysis_text,
+            analysis_status=group.analysis_status,
+        )
+
+    def ensure_semantic_groups(paper_id: str, session: Session) -> list[SemanticGroup]:
+        existing = list(
+            session.scalars(
+                select(SemanticGroup)
+                .where(SemanticGroup.paper_id == paper_id)
+                .order_by(SemanticGroup.group_index)
+            )
+        )
+        if existing:
+            return existing
+        paragraphs = list(
+            session.scalars(
+                select(Paragraph)
+                .where(Paragraph.paper_id == paper_id)
+                .order_by(Paragraph.paragraph_index)
+            )
+        )
+        block_ids = [paragraph.block_id for paragraph in paragraphs]
+        block_types = {
+            block.id: block.block_type
+            for block in session.scalars(
+                select(DocumentBlockRecord).where(DocumentBlockRecord.id.in_(block_ids))
+            )
+        }
+        batches: list[list[str]] = []
+        current: list[str] = []
+        for paragraph in paragraphs:
+            is_heading = block_types.get(paragraph.block_id) in {
+                BlockType.TITLE.value,
+                BlockType.HEADING.value,
+            }
+            if is_heading and current:
+                batches.append(current)
+                current = []
+            current.append(paragraph.id)
+            if is_heading or len(current) >= 3:
+                batches.append(current)
+                current = []
+        if current:
+            batches.append(current)
+        groups = [
+            SemanticGroup(
+                paper_id=paper_id,
+                group_index=index,
+                paragraph_ids_json=json.dumps(paragraph_ids),
+            )
+            for index, paragraph_ids in enumerate(batches)
+        ]
+        session.add_all(groups)
+        session.commit()
+        return groups
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -253,6 +321,68 @@ def create_app(
             translated_count=translated_count,
             cached_count=cached_count,
             paragraphs=paragraphs,
+        )
+
+    @app.get(
+        "/api/papers/{paper_id}/groups",
+        response_model=list[SemanticGroupResponse],
+    )
+    def list_semantic_groups(
+        paper_id: str,
+        session: SessionDependency,
+    ) -> list[SemanticGroupResponse]:
+        get_paper_or_404(paper_id, session)
+        return [serialize_group(group) for group in ensure_semantic_groups(paper_id, session)]
+
+    @app.post(
+        "/api/papers/{paper_id}/analysis",
+        response_model=AnalysisResponse,
+    )
+    def generate_analysis(
+        paper_id: str,
+        payload: AnalysisRequest,
+        session: SessionDependency,
+    ) -> AnalysisResponse:
+        get_paper_or_404(paper_id, session)
+        groups = ensure_semantic_groups(paper_id, session)
+        if payload.group_ids:
+            selected_ids = set(payload.group_ids)
+            groups = [group for group in groups if group.id in selected_ids]
+        paragraphs = {
+            paragraph.id: paragraph
+            for paragraph in session.scalars(
+                select(Paragraph).where(Paragraph.paper_id == paper_id)
+            )
+        }
+        generated_count = 0
+        cached_count = 0
+        try:
+            for group in groups:
+                if group.analysis_text and not payload.force:
+                    cached_count += 1
+                    continue
+                paragraph_ids = json.loads(group.paragraph_ids_json)
+                source = "\n\n".join(
+                    paragraphs[paragraph_id].source_text
+                    for paragraph_id in paragraph_ids
+                    if paragraph_id in paragraphs
+                )
+                group.analysis_status = "processing"
+                session.commit()
+                group.analysis_text = app.state.ai_provider.analyze(source)
+                group.analysis_status = "ready"
+                generated_count += 1
+                session.commit()
+        except AIConfigurationError as exc:
+            session.rollback()
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            session.rollback()
+            raise HTTPException(status_code=502, detail=f"深度解读失败：{exc}") from exc
+        return AnalysisResponse(
+            generated_count=generated_count,
+            cached_count=cached_count,
+            groups=[serialize_group(group) for group in groups],
         )
 
     @app.get("/api/papers/{paper_id}/file")

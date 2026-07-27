@@ -81,3 +81,22 @@ class Paragraph(Base):
     translated_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_number: Mapped[int] = mapped_column(Integer)
     source_bbox_json: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class SemanticGroup(Base):
+    __tablename__ = "semantic_groups"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid4()),
+    )
+    paper_id: Mapped[str] = mapped_column(
+        ForeignKey("papers.id", ondelete="CASCADE"),
+        index=True,
+    )
+    group_index: Mapped[int] = mapped_column(Integer)
+    paragraph_ids_json: Mapped[str] = mapped_column(Text)
+    analysis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analysis_status: Mapped[str] = mapped_column(String(40), default="pending")
+    prompt_version: Mapped[str] = mapped_column(String(40), default="analysis-v1")
