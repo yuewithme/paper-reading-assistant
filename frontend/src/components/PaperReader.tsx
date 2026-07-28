@@ -71,7 +71,7 @@ export function PaperReader({
   const visibleGroups = useMemo<SemanticGroup[]>(
     () =>
       groups.length
-        ? groups
+        ? collapseSkippedGroups(groups)
         : paper.paragraphs.map((paragraph, index) => ({
             id: `pending-${paragraph.id}`,
             group_index: index,
@@ -298,7 +298,7 @@ export function PaperReader({
         <div className="column-label column-label--left">原文 + 中文翻译</div>
         <div className="column-divider" />
         <div className="column-label column-label--right">深度 AI 解读</div>
-        {visibleGroups.map((group) => {
+        {visibleGroups.map((group, displayIndex) => {
           const paragraphs = group.paragraph_ids
             .map((id) => paragraphMap.get(id))
             .filter((item): item is Paragraph => Boolean(item));
@@ -307,7 +307,7 @@ export function PaperReader({
           return (
             <div
               className={`semantic-group-row ${analysisSkipped ? "is-source-only" : ""}`}
-              data-group-number={group.group_index + 1}
+              data-group-number={displayIndex + 1}
               key={group.id}
             >
               <section
@@ -334,7 +334,7 @@ export function PaperReader({
                   onMouseEnter={() => setHoveredGroup(group.id)}
                   onMouseLeave={() => setHoveredGroup(null)}
                 >
-                  <span className="group-number">GROUP {group.group_index + 1}</span>
+                  <span className="group-number">GROUP {displayIndex + 1}</span>
                   {group.analysis_text ? (
                     <AnalysisMarkdown text={group.analysis_text} vocabulary={vocabulary} />
                   ) : (
@@ -375,6 +375,43 @@ export function PaperReader({
       />
     </section>
   );
+}
+
+function collapseSkippedGroups(groups: SemanticGroup[]): SemanticGroup[] {
+  const visible: SemanticGroup[] = [];
+  let leadingParagraphIds: string[] = [];
+
+  for (const group of groups) {
+    if (group.analysis_status === "skipped") {
+      if (visible.length) {
+        const previous = visible[visible.length - 1];
+        visible[visible.length - 1] = {
+          ...previous,
+          paragraph_ids: [...previous.paragraph_ids, ...group.paragraph_ids],
+        };
+      } else {
+        leadingParagraphIds = [...leadingParagraphIds, ...group.paragraph_ids];
+      }
+      continue;
+    }
+
+    visible.push({
+      ...group,
+      paragraph_ids: [...leadingParagraphIds, ...group.paragraph_ids],
+    });
+    leadingParagraphIds = [];
+  }
+
+  if (!visible.length && leadingParagraphIds.length) {
+    return [
+      {
+        ...groups[0],
+        paragraph_ids: leadingParagraphIds,
+      },
+    ];
+  }
+
+  return visible;
 }
 
 function BilingualParagraph({
