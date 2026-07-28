@@ -464,17 +464,23 @@ h1 {
   min-height: 150px;
   border-bottom: 1px solid var(--line);
   transition: background .16s ease;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 420px;
 }
 
 .semantic-source {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   padding: 0 42px;
 }
 
 .semantic-analysis {
   padding: 30px 34px 36px;
   background: #edf1ea;
+}
+
+.semantic-analysis--source-only {
+  min-height: 0;
+  padding: 0;
 }
 
 .semantic-source.is-linked {
@@ -594,11 +600,6 @@ h1 {
 .semantic-analysis .analysis-empty {
   color: #92978f;
   font-style: italic;
-}
-
-.semantic-analysis .analysis-skipped {
-  color: #92978f;
-  font-size: 13px;
 }
 
 .action-button {
