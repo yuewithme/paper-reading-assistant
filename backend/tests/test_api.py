@@ -223,6 +223,8 @@ def test_private_layout_parser_returns_page_ordered_blocks_without_persisting(
     assert response.status_code == 200
     payload = response.json()
     assert payload["errorCode"] == 0
+    assert payload["parser"] == "paddleocr-ppstructurev3"
+    assert payload["parserVersion"]
     pages = payload["result"]["layoutParsingResults"]
     assert len(pages) == 1
     blocks = pages[0]["prunedResult"]["parsing_res_list"]

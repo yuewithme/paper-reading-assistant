@@ -9,6 +9,7 @@ import tempfile
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
+from importlib.metadata import version as package_version
 from pathlib import Path
 from time import perf_counter
 from typing import Annotated
@@ -873,6 +874,8 @@ def create_app(
             return {
                 "errorCode": 0,
                 "errorMsg": "Success",
+                "parser": "paddleocr-ppstructurev3",
+                "parserVersion": package_version("paddleocr"),
                 "result": {"layoutParsingResults": results},
             }
         finally:
