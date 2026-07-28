@@ -1,8 +1,11 @@
+import base64
+import binascii
 import hashlib
 import json
 import logging
 import re
 import shutil
+import tempfile
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -53,6 +56,7 @@ from .schemas import (
     ChatResponse,
     ConversationResponse,
     HealthResponse,
+    LayoutParsingRequest,
     MessageResponse,
     PaperCreate,
     PaperDetailResponse,
@@ -150,6 +154,26 @@ def create_app(
             raise HTTPException(status_code=404, detail="论文不存在")
         return paper
 
+    def get_document_parser() -> DocumentParsingService:
+        if app.state.document_parser is None:
+            from .parsing.paddle import PaddleStructureParser
+
+            app.state.document_parser = DocumentParsingService(
+                parser=PaddleStructureParser(
+                    device=active_settings.ocr_device,
+                    model_source=active_settings.paddle_pdx_model_source,
+                    cpu_threads=active_settings.ocr_cpu_threads,
+                    enable_hpi=active_settings.ocr_enable_hpi,
+                    layout_model=active_settings.ocr_layout_model,
+                    text_detection_model=active_settings.ocr_text_detection_model,
+                    text_recognition_model=active_settings.ocr_text_recognition_model,
+                    formula_model=active_settings.ocr_formula_model,
+                    table_structure_model=active_settings.ocr_table_structure_model,
+                    use_region_detection=active_settings.ocr_use_region_detection,
+                )
+            )
+        return app.state.document_parser
+
     def parse_and_store(paper: Paper, session: Session, force_ocr: bool = False) -> None:
         if not paper.file_path:
             raise HTTPException(status_code=409, detail="这条论文记录没有 PDF 文件")
@@ -170,24 +194,8 @@ def create_app(
         ocr_started = perf_counter()
         logger.info("pipeline.ocr.start paper_id=%s", paper.id)
         try:
-            if app.state.document_parser is None:
-                from .parsing.paddle import PaddleStructureParser
-
-                app.state.document_parser = DocumentParsingService(
-                    parser=PaddleStructureParser(
-                        device=active_settings.ocr_device,
-                        model_source=active_settings.paddle_pdx_model_source,
-                        cpu_threads=active_settings.ocr_cpu_threads,
-                        enable_hpi=active_settings.ocr_enable_hpi,
-                        layout_model=active_settings.ocr_layout_model,
-                        text_detection_model=active_settings.ocr_text_detection_model,
-                        text_recognition_model=active_settings.ocr_text_recognition_model,
-                        formula_model=active_settings.ocr_formula_model,
-                        table_structure_model=active_settings.ocr_table_structure_model,
-                        use_region_detection=active_settings.ocr_use_region_detection,
-                    )
-                )
-            parse_pages = getattr(app.state.document_parser, "parse_pages", None)
+            document_parser = get_document_parser()
+            parse_pages = getattr(document_parser, "parse_pages", None)
             if callable(parse_pages):
                 parsed_pages = parse_pages(
                     Path(paper.file_path),
@@ -196,7 +204,7 @@ def create_app(
             else:
                 parsed_pages = iter(
                     [
-                        app.state.document_parser.parse(
+                        document_parser.parse(
                             Path(paper.file_path),
                             force_ocr=force_ocr,
                         )
@@ -788,6 +796,88 @@ def create_app(
             llm_provider="qwen",
             llm_configured=active_settings.llm_configured,
         )
+
+    @app.post("/api/parser/layout-parsing")
+    def layout_parsing(payload: LayoutParsingRequest) -> dict:
+        max_bytes = active_settings.max_pdf_size_mb * 1024 * 1024
+        if len(payload.file) > ((max_bytes + 2) // 3) * 4 + 4:
+            raise HTTPException(status_code=413, detail="PDF 文件过大")
+        try:
+            content = base64.b64decode(payload.file, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="PDF Base64 无效") from exc
+        if len(content) > max_bytes:
+            raise HTTPException(status_code=413, detail="PDF 文件过大")
+        if not content.startswith(b"%PDF"):
+            raise HTTPException(status_code=415, detail="文件不是有效 PDF")
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temporary:
+                temporary.write(content)
+                temporary_path = Path(temporary.name)
+            parser = get_document_parser()
+            parse_pages = getattr(parser, "parse_pages", None)
+            parsed_pages = (
+                list(parse_pages(temporary_path))
+                if callable(parse_pages)
+                else [parser.parse(temporary_path)]
+            )
+            if not parsed_pages:
+                raise RuntimeError("PaddleOCR 没有返回任何页面")
+            page_count = max(page.page_count for page in parsed_pages)
+            blocks_by_page = {page_number: [] for page_number in range(1, page_count + 1)}
+            for parsed_page in parsed_pages:
+                for block in parsed_page.blocks:
+                    blocks_by_page.setdefault(block.page_number, []).append(block)
+            results = []
+            for page_number in range(1, page_count + 1):
+                blocks = sorted(
+                    blocks_by_page.get(page_number, []),
+                    key=lambda block: block.reading_order,
+                )
+                parsing_results = [
+                    {
+                        "block_bbox": [
+                            block.bbox.x0,
+                            block.bbox.y0,
+                            block.bbox.x1,
+                            block.bbox.y1,
+                        ],
+                        "block_label": block.block_type.value,
+                        "block_content": block.text,
+                        "block_id": index,
+                        "block_order": index,
+                        **(
+                            {"score": block.confidence}
+                            if block.confidence is not None
+                            else {}
+                        ),
+                    }
+                    for index, block in enumerate(blocks)
+                    if block.text.strip()
+                ]
+                results.append(
+                    {
+                        "prunedResult": {"parsing_res_list": parsing_results},
+                        "markdown": {
+                            "text": "\n\n".join(
+                                item["block_content"] for item in parsing_results
+                            ),
+                            "images": None,
+                        },
+                        "outputImages": None,
+                        "inputImage": None,
+                    }
+                )
+            return {
+                "errorCode": 0,
+                "errorMsg": "Success",
+                "result": {"layoutParsingResults": results},
+            }
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     @app.get("/api/papers", response_model=list[PaperResponse])
     def list_papers(session: SessionDependency) -> list[Paper]:

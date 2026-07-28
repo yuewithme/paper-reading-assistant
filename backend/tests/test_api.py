@@ -1,4 +1,5 @@
 import sqlite3
+from base64 import b64encode
 from io import BytesIO
 from threading import Lock
 from time import sleep
@@ -202,6 +203,50 @@ def test_health_reports_qwen_configuration_state(tmp_path) -> None:
         "llm_provider": "qwen",
         "llm_configured": False,
     }
+
+
+def test_private_layout_parser_returns_page_ordered_blocks_without_persisting(
+    tmp_path,
+) -> None:
+    client = build_client(tmp_path)
+
+    response = client.post(
+        "/api/parser/layout-parsing",
+        json={
+            "file": b64encode(make_pdf()).decode("ascii"),
+            "fileType": 0,
+            "returnMarkdownImages": False,
+            "visualize": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["errorCode"] == 0
+    pages = payload["result"]["layoutParsingResults"]
+    assert len(pages) == 1
+    blocks = pages[0]["prunedResult"]["parsing_res_list"]
+    assert blocks[0] == {
+        "block_bbox": [72.0, 80.0, 520.0, 110.0],
+        "block_label": "title",
+        "block_content": "Reliable Academic Reading",
+        "block_id": 0,
+        "block_order": 0,
+        "score": 0.99,
+    }
+    assert pages[0]["markdown"]["images"] is None
+    assert list((tmp_path / "papers").iterdir()) == []
+
+
+def test_private_layout_parser_rejects_invalid_pdf(tmp_path) -> None:
+    client = build_client(tmp_path)
+
+    response = client.post(
+        "/api/parser/layout-parsing",
+        json={"file": b64encode(b"not-a-pdf").decode("ascii"), "fileType": 0},
+    )
+
+    assert response.status_code == 415
 
 
 def test_paper_can_be_created_and_listed(tmp_path) -> None:

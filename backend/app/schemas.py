@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -9,6 +11,13 @@ class HealthResponse(BaseModel):
     environment: str
     llm_provider: str
     llm_configured: bool
+
+
+class LayoutParsingRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    file: str = Field(min_length=1)
+    file_type: Literal[0] = Field(default=0, alias="fileType")
 
 
 class PaperCreate(BaseModel):

@@ -16,6 +16,8 @@ services:
     volumes:
       - ./data:/app/data
       - paddle-models:/root/.paddlex
+    ports:
+      - "127.0.0.1:${PAPER_READER_BACKEND_PORT:-18100}:8000"
     shm_size: 2gb
     restart: unless-stopped
     healthcheck:
