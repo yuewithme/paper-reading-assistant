@@ -61,7 +61,7 @@ export function PaperReader({
     [paper.paragraphs],
   );
   const analysisBlockCount = useMemo(
-    () => groups.filter((group) => group.analysis_status !== "skipped").length,
+    () => groups.filter((group) => Boolean(group.analysis_text?.trim())).length,
     [groups],
   );
   const paragraphMap = useMemo(
@@ -303,8 +303,13 @@ export function PaperReader({
             .map((id) => paragraphMap.get(id))
             .filter((item): item is Paragraph => Boolean(item));
           const active = hoveredGroup === group.id;
+          const analysisSkipped = group.analysis_status === "skipped";
           return (
-            <div className="semantic-group-row" key={group.id}>
+            <div
+              className={`semantic-group-row ${analysisSkipped ? "is-source-only" : ""}`}
+              data-group-number={group.group_index + 1}
+              key={group.id}
+            >
               <section
                 className={`semantic-source ${active ? "is-linked" : ""}`}
                 onMouseEnter={() => setHoveredGroup(group.id)}
@@ -320,25 +325,27 @@ export function PaperReader({
                 ))}
               </section>
               <div className="column-divider" />
-              <aside
-                data-paragraph-id={group.paragraph_ids[0]}
-                className={`semantic-analysis ${active ? "is-linked" : ""}`}
-                onMouseEnter={() => setHoveredGroup(group.id)}
-                onMouseLeave={() => setHoveredGroup(null)}
-              >
-                <span className="group-number">GROUP {group.group_index + 1}</span>
-                {group.analysis_text ? (
-                  <AnalysisMarkdown text={group.analysis_text} vocabulary={vocabulary} />
-                ) : group.analysis_status === "skipped" ? (
-                  <p className="analysis-skipped">结构信息，无需单独解读。</p>
-                ) : (
-                  <p className="analysis-empty">
-                    {ocrInProgress
-                      ? "本页原文已可阅读；全文 OCR 完成后会自动生成译文和深度解读。"
-                      : "正在生成深度解读。一个解读可对应左侧多个自然段。"}
-                  </p>
-                )}
-              </aside>
+              {analysisSkipped ? (
+                <div className="semantic-analysis semantic-analysis--source-only" aria-hidden="true" />
+              ) : (
+                <aside
+                  data-paragraph-id={group.paragraph_ids[0]}
+                  className={`semantic-analysis ${active ? "is-linked" : ""}`}
+                  onMouseEnter={() => setHoveredGroup(group.id)}
+                  onMouseLeave={() => setHoveredGroup(null)}
+                >
+                  <span className="group-number">GROUP {group.group_index + 1}</span>
+                  {group.analysis_text ? (
+                    <AnalysisMarkdown text={group.analysis_text} vocabulary={vocabulary} />
+                  ) : (
+                    <p className="analysis-empty">
+                      {ocrInProgress
+                        ? "本页原文已可阅读；全文 OCR 完成后会自动生成译文和深度解读。"
+                        : "正在生成深度解读。一个解读可对应左侧多个自然段。"}
+                    </p>
+                  )}
+                </aside>
+              )}
             </div>
           );
         })}
